@@ -1,6 +1,6 @@
 # Qwen Code 免费额度
 
-把本机 **Qwen Code**（用 Qoder 账号登录的 `qwen` CLI，版本 1.0 preview 及以后）的模型额度，作为 DeepSeek Harness 的一个模型 provider（路由键 `qwencode`）接入。当前版本 **2.0.1**。
+把本机 **Qwen Code**（用 Qoder 账号登录的 `qwen` CLI，版本 1.0 preview 及以后）的模型额度，作为 DeepSeek Harness 的一个模型 provider（路由键 `qwencode`）接入。当前版本 **1.0.0-rc.1**（release candidate）。
 
 插件本身不实现 agent：工具调用、skill 读取、文件修改、子代理等全部由 DSH 原生完成；本插件只做两件事：
 

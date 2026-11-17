@@ -1,6 +1,6 @@
 # dsh-qwencode
 
-把本机 **Qwen Code**（`qwen` CLI 1.0 preview，Qoder 账号登录）的免费额度作为 DeepSeek Harness 的模型 provider（路由键 `qwencode`）接入。当前版本 **2.0.1**，变更见 [CHANGELOG.md](./CHANGELOG.md)。
+把本机 **Qwen Code**（`qwen` CLI 1.0 preview，Qoder 账号登录）的免费额度作为 DeepSeek Harness 的模型 provider（路由键 `qwencode`）接入。当前版本 **1.0.0-rc.1**（release candidate），变更见 [CHANGELOG.md](./CHANGELOG.md)。
 
 插件附赠一个只监听 `127.0.0.1` 的桥接服务：
 
@@ -87,13 +87,13 @@ pwsh -File scripts\run-node.ps1 scripts\selftest.mjs --model qfmodel
 `selftest.mjs` 覆盖：healthz、实时模型目录、模型列表、纯文本+思考流、工具调用、工具结果回传、错误映射。单元测试覆盖请求清洗、Qoder 目录映射、token 刷新（含 `expires_in` 与并发轮换）、provider 配置生成。
 
 已在 DSH 0.2.2-rc.3 的桌面 profile 实测：
-- **2.0.1**：单元测试 20 项全 PASS；独立 `selftest.mjs` 8 项全 PASS，其中 `live_catalog` 从 Qoder 拉到 4 个模型（`qmodel_38max@180000`、`qfmodel@180000`），文本+思考流、工具调用、工具结果回传与错误映射均通过。另实测：不带 `reasoning` 字段请求 `qfmodel` 时上游返回 18 个思考增量（Qwen 默认开启）；带 `reasoning.effort="none"` 时返回 0 个思考增量，证明 `off` 映射有效。
+- **1.0.0-rc.1**：单元测试 20 项全 PASS；独立 `selftest.mjs` 8 项全 PASS，其中 `live_catalog` 从 Qoder 拉到 4 个模型（`qmodel_38max@180000`、`qfmodel@180000`），文本+思考流、工具调用、工具结果回传与错误映射均通过。另实测：不带 `reasoning` 字段请求 `qfmodel` 时上游返回 18 个思考增量（Qwen 默认开启）；带 `reasoning.effort="none"` 时返回 0 个思考增量，证明 `off` 映射有效。
 - 0.1.0 安装即生效：`dsh-plugin` 行状态 active，`/healthz` 正常，provider 配置自动写入 profile patch；2026-11-17 17:08 桥接随本次 DSH 启动重新拉起并正常服务，说明已安装 bundle 的持久化生效。
 - 用 `provider=qwencode, model=qmodel_latest` 的真实子代理会话完成：`pwsh` 写文件 → `read` 读回 → `skill` 加载 `dsh-doc` → 目录列举，全部真实工具调用成功；
 - 同一会话日志记录到 `provider=qwencode/model=qmodel_latest` 与 `reasoning` 思考块，桥接侧观测到 `reasoning.effort=high` 与 90 个思考增量事件；
 - `model=qfmodel`（免费模型）同样完成真实工具调用；
 - token 刷新实测：自动刷新并写回后 `qwen` CLI 仍可正常使用；外部进程轮换凭证后桥接能检测文件变化并采用新 token。
-- 升级模块（2.0.1）后需重启 DSH 或重装插件使新代码生效；profile 里的 `link:` 依赖会直接读取新版本。
+- 升级模块（1.0.0-rc.1）后需重启 DSH 或重装插件使新代码生效；profile 里的 `link:` 依赖会直接读取新版本。
 
 ## 目录结构
 
@@ -132,6 +132,13 @@ dsh-qwencode/
 - **provider 没出现在模型选择器**：查看 `%TEMP%\dsh-qwencode\provider-sync.json` 里的自动注册诊断（最近的尝试、失败原因）；把插件配置 `manageProviderConfig` 设为 `false` 后按日志打印的 YAML 手动添加。
 - **凭证缺失/过期**：`curl http://127.0.0.1:45917/healthz` 的 `auth` 字段会给出状态与错误；运行 `qwen` 后执行 `/auth` 重新登录即可。
 - **额度/付费确认**：上游返回 `MODEL_PAID_CONFIRM_REQUIRED` 时桥接返回 402 并说明；需要自动确认时把 `autoConfirmPaid` 设为 `true`（会消耗付费额度）。
+
+## 安全说明
+
+- 桥接只绑定 `127.0.0.1`，并会把非 loopback 的 `host` 配置视为错误拒绝启动；不向局域网暴露。
+- `/healthz` 默认只返回版本、模型 id 列表、凭证状态（可用/到期时间/region）与去敏后的请求计数；`credentialPath`、用户名、userId 仅在显式 `healthzDetail: true` 时返回。
+- 凭证文件按原 schema 原子写回（临时文件 + rename）；POSIX 上设为 0o600，Windows 上依赖用户 profile 目录的默认 ACL（Windows 无法用 chmod 收紧，见「限制」）。
+- 刷新与错误信息不含 access/refresh token；上游错误详情只保留脱敏后的短摘要，不落盘。
 
 ## 开发
 

@@ -77,11 +77,38 @@ export const DEFAULT_CONFIG = {
    * reasoning.effort="none"，off 才真正关掉思考。默认关闭，避免影响直接调用者。
    */
   missingReasoningMeansOff: false,
+  /** /healthz 是否返回凭证路径、账号名等本机隐私字段（默认否）。 */
+  healthzDetail: false,
   models: DEFAULT_MODELS,
 }
 
 /** 上游错误体里可能出现的"付费确认"标记。 */
 const PAID_CONFIRM_SUBCODE = 'MODEL_PAID_CONFIRM_REQUIRED'
+
+/** 判断是否 loopback 监听地址。 */
+function isLoopbackHost(host) {
+  if (typeof host !== 'string') return false
+  const value = host.trim().toLowerCase()
+  return value === '127.0.0.1' || value === '::1' || value === 'localhost'
+}
+
+/** 去敏一条日志记录：把疑似凭证/长 token 片段替换掉，避免泄露到 /healthz。 */
+function redactLogEntry(entry) {
+  if (!entry || typeof entry !== 'object') return entry
+  const stringify = (value) => String(value)
+    .replace(/\b(?:dt|drt)-[A-Za-z0-9]{8,}/g, '[REDACTED]')
+    .replace(/\bgho_[A-Za-z0-9]{8,}/g, '[REDACTED]')
+    .replace(/\bBearer\s+[^\s"']+/gi, 'Bearer [REDACTED]')
+  const next = { ...entry, message: stringify(entry.message) }
+  if (entry.extra && typeof entry.extra === 'object') {
+    try {
+      next.extra = JSON.parse(stringify(JSON.stringify(entry.extra)))
+    } catch {
+      next.extra = '[redacted]'
+    }
+  }
+  return next
+}
 
 /**
  * 把 DSH（pi-ai）发来的 OpenAI Responses 请求体改写成 Qoder 网关可接受的形式。
@@ -222,19 +249,29 @@ function describeUpstreamError(status, text) {
   try {
     body = JSON.parse(text)
   } catch {
-    return { message: text.trim() || `Qoder 网关返回 HTTP ${status}`, code: undefined, subCode: undefined, raw: undefined }
+    return { message: sanitizeText(text.trim() || `Qoder 网关返回 HTTP ${status}`), code: undefined, subCode: undefined, param: undefined }
   }
   const error = body?.error && typeof body.error === 'object' ? body.error : body
-  const message = typeof error?.message === 'string' && error.message.trim()
+  const rawMessage = typeof error?.message === 'string' && error.message.trim()
     ? error.message.trim()
     : typeof body?.message === 'string' && body.message.trim() ? body.message.trim() : `Qoder 网关返回 HTTP ${status}`
   return {
-    message,
+    // 只保留脱敏后的短消息，不回传完整响应体（可能夹带 token 片段）。
+    message: sanitizeText(rawMessage).slice(0, 500),
     code: typeof error?.code === 'string' ? error.code : undefined,
     subCode: typeof error?.subCode === 'string' ? error.subCode : undefined,
     param: typeof error?.param === 'string' ? error.param : undefined,
-    raw: body,
   }
+}
+
+/** 去敏任意文本：抹掉疑似凭证与 Bearer。 */
+function sanitizeText(value) {
+  if (typeof value !== 'string') return value
+  return value
+    .replace(/\b(?:dt|drt)-[A-Za-z0-9]{8,}/g, '[REDACTED]')
+    .replace(/\bgho_[A-Za-z0-9]{8,}/g, '[REDACTED]')
+    .replace(/\bBearer\s+[^\s"']+/gi, 'Bearer [REDACTED]')
+    .replace(/\b(sk|key)-[A-Za-z0-9_-]{16,}/g, '[REDACTED]')
 }
 
 /**
@@ -341,7 +378,19 @@ export function createBridge(userConfig = {}) {
   }
 
   function handleHealth(res) {
-    sendJson(res, 200, {
+    // 默认只暴露运行状态与去敏信息；凭证路径、账号名、userId 属于本机隐私，
+    // 仅在显式开启 healthzDetail 时返回，避免同机其它进程读取。
+    const authStatus = auth.status()
+    const publicAuth = {
+      region: authStatus.region,
+      hasAccount: authStatus.hasAccount,
+      canRefresh: authStatus.canRefresh,
+      accessTokenExpiresAt: authStatus.accessTokenExpiresAt ?? null,
+      accessTokenExpiresInMs: authStatus.accessTokenExpiresInMs ?? null,
+      refreshedAt: authStatus.refreshedAt ?? null,
+      ...(authStatus.error ? { error: authStatus.error } : {}),
+    }
+    const payload = {
       ok: true,
       service: 'dsh-qwencode-bridge',
       version: VERSION,
@@ -352,10 +401,14 @@ export function createBridge(userConfig = {}) {
       agentId: config.agentId,
       modelCount: currentModels().length,
       models: currentModels().map((model) => model.id),
-      auth: auth.status(),
+      auth: publicAuth,
       stats: { ...stats, uptimeMs: startedAt ? Date.now() - startedAt : 0 },
-      recentLog: recentLog.slice(-20),
-    })
+      recentLog: recentLog.slice(-20).map(redactLogEntry),
+    }
+    if (config.healthzDetail === true) {
+      payload.auth = authStatus
+    }
+    sendJson(res, 200, payload)
   }
 
   /** 把上游 SSE 原样转发给 DSH 侧。 */
@@ -426,7 +479,7 @@ export function createBridge(userConfig = {}) {
     }
     res.on('close', onClose)
     try {
-      const upstream = await fetch(upstreamUrl(), {
+      const upstream = await (config.fetchImpl ?? fetch)(upstreamUrl(), {
         method: 'POST',
         headers: upstreamHeaders(token, payload, requestId, sessionId, forcePaidConfirmation),
         body: JSON.stringify(payload),
@@ -586,6 +639,12 @@ export function createBridge(userConfig = {}) {
     /** 启动 HTTP 服务；端口冲突时抛出带提示的错误。 */
     async start() {
       if (server) return this.url
+      // 安全兜底：桥接不做本地鉴权，只允许 loopback 监听，避免误配把 token 代理暴露到局域网。
+      if (!isLoopbackHost(config.host)) {
+        throw new Error(
+          `桥接服务只允许监听回环地址（127.0.0.1 / ::1 / localhost），当前配置 host=${JSON.stringify(config.host)} 已拒绝启动。`,
+        )
+      }
       server = createServer((req, res) => {
         Promise.resolve(route(req, res)).catch((error) => {
           log('error', `请求处理异常：${error?.message ?? error}`)

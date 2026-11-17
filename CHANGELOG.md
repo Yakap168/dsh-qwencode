@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.0-rc.1 — 2026-11-17
+
+首个公开发布候选（release candidate）。
+
+- 把本机 Qwen Code（Qoder 登录）的免费额度接入 DeepSeek Harness：本地 OpenAI Responses 桥接 + Qoder OAuth 自动刷新。
+- 自动注册 `qwencode` provider：Qwen4-Max / Qwen4-Max-Preview（1M 上下文）、Qwen3.8-Max / Qwen3.8-Flash（180K 上下文），保留每个模型的思考强度档位。
+- 启动时同步 Qoder `api/v3/model/list?categories=qcode` 实时模型目录，失败回退内置表，不阻塞启动。
+- DSH 的 `off` 由桥接补成 `reasoning.effort=none`，真正关闭思考；支持 `defaultReasoningEffort` 覆盖默认档位。
+- 与 `qwen` CLI 共用凭证：mtime/size 感知外部刷新、写回前核对 refresh_token、原子写回；`expires_in` 走相对时长换算。
+- 请求清洗对齐 qwen-code（stream/store、删除不支持的采样字段、system→developer 兜底、注入 `metadata.session_type`）。
+- 20 项 `node:test` 离线单元测试；`scripts/selftest.mjs` 提供真实上游端到端自测。
+
+> 版本沿革：早期内部迭代曾按 0.1.0 → 2.0.1 编号，现统一归口到语义化发布的 1.0.0-rc.1；下列历史条目按时间倒序列出当时的改动。
+
 ## 2.0.1 — 2026-11-17
 
 - 启动时从 Qoder `api/v3/model/list?categories=qcode` 同步实时模型目录；目录失败回退内置表，不阻塞插件启动。
