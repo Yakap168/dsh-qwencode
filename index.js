@@ -11,6 +11,7 @@
  * 这里不实现任何 agent 逻辑：工具调用、skill、文件读写全部由 DSH 自身完成。
  */
 import { createBridge, DEFAULT_MODELS } from './src/bridge.mjs'
+import { fetchModelCatalog } from './src/catalog.mjs'
 import { recordDiagnostic } from './src/diagnostics.mjs'
 
 export const name = 'dsh-qwencode'
@@ -30,6 +31,8 @@ export const DEFAULT_OPTIONS = {
   agentId: 'agent_common',
   /** 上游 metadata.session_type（qwen-code 固定值 qcode）。 */
   sessionType: 'qcode',
+  /** 伪装成 qwen CLI 的 Cosy-ClientType。 */
+  clientType: '13',
   /** 伪装成 qwen CLI 的 Cosy-Version。 */
   clientVersion: '1.0.0-preview.2',
   /** 付费模型遇到 MODEL_PAID_CONFIRM_REQUIRED 时是否自动确认（会消耗付费额度，默认关闭）。 */
@@ -38,6 +41,19 @@ export const DEFAULT_OPTIONS = {
   manageProviderConfig: true,
   /** 自定义凭证路径（默认 ~/.qwen/qoder_oauth_creds.json）。 */
   credentialPath: undefined,
+  /** 自定义模型表（数组）；缺省时用 Qoder 目录，失败回退内置表。 */
+  models: undefined,
+  /** 启动时是否从 Qoder 拉取实时模型目录（默认开启）。 */
+  useLiveCatalog: true,
+  /** 模型目录请求超时（毫秒）；超时沿用内置表，不阻塞插件启动。 */
+  catalogTimeoutMs: 3000,
+  /**
+   * 会话未显式选择思考档位时的默认 effort。`low` 是四个模型都支持的档位；
+   * 不写 `high` 是因为 Qwen3.8 系列不支持 high（会把会话卡在 UNSUPPORTED_REASONING_EFFORT）。
+   * 设为空字符串/删除可回到 Qwen 各模型自己的默认档位，但此时 DSH 的 off 无法关闭思考
+   * （DSH 用「省略 reasoning」表示 off，Qwen 的默认是开启）。
+   */
+  defaultReasoningEffort: 'low',
 }
 
 /**
@@ -45,30 +61,42 @@ export const DEFAULT_OPTIONS = {
  * 注意：`headers.Authorization` 只是为了让 pi-ai 认为路由已有鉴权头（它会用
  * "unused" 作为 apiKey）；本地桥接服务会忽略该值，真正鉴权发生在桥上。
  * @param {number} port
+ * @param {Array<Record<string, any>>} [models] 当前模型表
+ * @param {{defaultReasoningEffort?: string}} [options]
  * @returns {Record<string, unknown>}
  */
-export function desiredProviderConfig(port) {
-  return {
+export function desiredProviderConfig(port, models = DEFAULT_MODELS, options = {}) {
+  const provider = {
     displayName: 'Qwen Code · 免费额度',
     api: 'openai-responses',
     baseURL: `http://127.0.0.1:${port}/v1`,
     headers: {
       Authorization: 'Bearer dsh-qwencode-local-bridge',
     },
-    // Qwen Code 默认 --thinking auto（模型自行决定，通常开启思考）；
-    // DSH 的会话未显式选择档位时回落到 profile.reasoning，因此这里给 high，
-    // 让默认行为与 Qwen Code 一致，同时仍可在模型选择器里改成 off/其它档位。
-    reasoning: 'high',
     streamIdleTimeoutMs: 600_000,
-    models: DEFAULT_MODELS.map((model) => ({
-      id: model.id,
-      name: model.name,
-      contextWindow: model.contextWindow,
-      maxTokens: model.maxTokens,
-      input: [...model.input],
-      reasoningEfforts: { ...model.reasoningEfforts },
-    })),
+    models: models.map((model) => {
+      const efforts = model.reasoningEfforts && typeof model.reasoningEfforts === 'object'
+        ? { ...model.reasoningEfforts }
+        : {}
+      const entry = {
+        id: model.id,
+        name: model.name,
+        contextWindow: model.contextWindow,
+        maxTokens: model.maxTokens,
+        input: Array.isArray(model.input) && model.input.length > 0 ? [...model.input] : ['text'],
+      }
+      // DSH 的配置 schema 拒绝“只有 off”或空的 reasoningEfforts：
+      // 没有至少一个真实档位时整段省略，模型按非推理模型注册。
+      if (Object.keys(efforts).some((level) => level !== 'off')) entry.reasoningEfforts = efforts
+      return entry
+    }),
   }
+  // 不写死全局默认档位：Qwen 各模型的默认 effort 不同（latest=high，
+  // 3.8 系列=medium），写死 high 会让 qmodel_38max/qfmodel 收到不支持的档位。
+  // 需要强制默认时由用户显式配置 defaultReasoningEffort。
+  const defaultEffort = options?.defaultReasoningEffort
+  if (typeof defaultEffort === 'string' && defaultEffort.length > 0) provider.reasoning = defaultEffort
+  return provider
 }
 
 /** 判断两个 JSON 值是否深度相等（配置里只有普通 JSON 类型）。 */
@@ -83,8 +111,8 @@ function deepEqual(left, right) {
 }
 
 /** 给用户看的"手工配置"提示（configEditor 不可用时）。 */
-function manualConfigHint(port) {
-  return [
+function manualConfigHint(port, models = DEFAULT_MODELS, defaultReasoningEffort) {
+  const lines = [
     '请手动把下面的 provider 路由加入 @deepseek-ai/dsh-llm-pi-ai 的 config.providers：',
     `  ${PROVIDER_ROUTE}:`,
     '    displayName: Qwen Code · 免费额度',
@@ -92,25 +120,37 @@ function manualConfigHint(port) {
     `    baseURL: http://127.0.0.1:${port}/v1`,
     '    headers:',
     '      Authorization: Bearer dsh-qwencode-local-bridge',
-    '    reasoning: high',
-    '    models:',
-    ...DEFAULT_MODELS.flatMap((model) => [
+  ]
+  if (typeof defaultReasoningEffort === 'string' && defaultReasoningEffort.length > 0) {
+    lines.push(`    reasoning: ${defaultReasoningEffort}`)
+  }
+  lines.push('    models:')
+  for (const model of models) {
+    const efforts = model.reasoningEfforts && typeof model.reasoningEfforts === 'object'
+      ? model.reasoningEfforts
+      : {}
+    lines.push(
       `      - id: ${model.id}`,
       `        name: ${model.name}`,
       `        contextWindow: ${model.contextWindow}`,
       `        maxTokens: ${model.maxTokens}`,
-      `        input: [${model.input.join(', ')}]`,
-      '        reasoningEfforts:',
-      ...Object.entries(model.reasoningEfforts).map(([level, wire]) => `          "${level}": ${wire}`),
-    ]),
-  ].join('\n')
+      `        input: [${(model.input ?? ['text']).join(', ')}]`,
+    )
+    if (Object.keys(efforts).some((level) => level !== 'off')) {
+      lines.push(
+        '        reasoningEfforts:',
+        ...Object.entries(efforts).map(([level, wire]) => `          "${level}": ${wire}`),
+      )
+    }
+  }
+  return lines.join('\n')
 }
 
 /**
  * 确保 llm-pi-ai 里存在（且内容匹配）qwencode provider 路由。
  * @returns {Promise<{ status: 'updated' | 'unchanged' | 'retry' | 'unavailable', detail: Record<string, unknown> }>}
  */
-async function ensureProviderRoute(ctx, options) {
+async function ensureProviderRoute(ctx, options, models = DEFAULT_MODELS) {
   const editor = ctx.get('configEditor')
   if (editor === undefined) return { status: 'unavailable', detail: { reason: 'configEditor 服务不可用' } }
   const entries = editor.entries()
@@ -118,7 +158,7 @@ async function ensureProviderRoute(ctx, options) {
   if (target === undefined) {
     return { status: 'unavailable', detail: { reason: '未找到 llm-pi-ai 配置行', entryNames: entries.map((entry) => entry.options.name) } }
   }
-  const desired = desiredProviderConfig(options.port)
+  const desired = desiredProviderConfig(options.port, models, { defaultReasoningEffort: options.defaultReasoningEffort })
   const currentProviders = target.options.config?.providers && typeof target.options.config.providers === 'object'
     ? target.options.config.providers
     : {}
@@ -175,7 +215,7 @@ function scheduleOutsideHmr(ctx, callback, delay) {
  * @param {import('@deepseek-ai/cordis').Context} ctx
  * @param {typeof DEFAULT_OPTIONS} options
  */
-function scheduleProviderRoute(ctx, options) {
+function scheduleProviderRoute(ctx, options, getModels = () => DEFAULT_MODELS) {
   if (options.manageProviderConfig === false) {
     ctx.logger?.info?.('[dsh-qwencode] manageProviderConfig=false，跳过自动写入 provider 配置')
     return () => {}
@@ -186,29 +226,30 @@ function scheduleProviderRoute(ctx, options) {
     if (cancelled) return
     let result
     try {
-      result = await ensureProviderRoute(ctx, options)
+      result = await ensureProviderRoute(ctx, options, getModels())
     } catch (error) {
       result = { status: 'retry', detail: { error: error instanceof Error ? error.message : String(error) } }
     }
     if (cancelled) return
     recordDiagnostic({ attempt: index, port: options.port, ...result })
     if (result.status === 'updated' || result.status === 'unchanged') {
+      const count = getModels().length
       ctx.logger?.info?.(
         result.status === 'updated'
-          ? `[dsh-qwencode] 已写入 llm-pi-ai provider 路由 "${PROVIDER_ROUTE}"（端口 ${options.port}）`
-          : `[dsh-qwencode] provider 路由 "${PROVIDER_ROUTE}" 已是最新`,
+          ? `[dsh-qwencode] 已写入 llm-pi-ai provider 路由 "${PROVIDER_ROUTE}"（端口 ${options.port}，${count} 个模型）`
+          : `[dsh-qwencode] provider 路由 "${PROVIDER_ROUTE}" 已是最新（${count} 个模型）`,
       )
       return
     }
     if (result.status === 'unavailable') {
       ctx.logger?.warn?.(
-        `[dsh-qwencode] 找不到 configEditor 或 llm-pi-ai 插件行，无法自动注册模型。\n${manualConfigHint(options.port)}`,
+        `[dsh-qwencode] 找不到 configEditor 或 llm-pi-ai 插件行，无法自动注册模型。\n${manualConfigHint(options.port, getModels(), options.defaultReasoningEffort)}`,
       )
       return
     }
     if (index + 1 >= attempts.length) {
       ctx.logger?.warn?.(
-        `[dsh-qwencode] 自动写入 provider 配置多次失败，请手动处理。\n${manualConfigHint(options.port)}`,
+        `[dsh-qwencode] 自动写入 provider 配置多次失败，请手动处理。\n${manualConfigHint(options.port, getModels(), options.defaultReasoningEffort)}`,
       )
       return
     }
@@ -237,18 +278,47 @@ export async function apply(ctx, config) {
     region: options.region,
     agentId: options.agentId,
     sessionType: options.sessionType,
+    clientType: options.clientType,
     clientVersion: options.clientVersion,
     autoConfirmPaid: options.autoConfirmPaid,
     credentialPath: options.credentialPath,
+    models: options.models,
+    // 配置了默认档位时，DSH 省略 reasoning 就代表用户选了 off；桥接补 none。
+    missingReasoningMeansOff: Boolean(options.defaultReasoningEffort),
     logger,
   })
   await bridge.start()
   ctx.effect(() => () => {
     void bridge.stop()
   })
-  const cancelProviderSync = scheduleProviderRoute(ctx, options)
+
+  // 先起服务，再拉目录：目录超时/失败不阻塞插件启动，模型选择器仍可用内置表。
+  // 用户显式给了 models 时以自定义表为准，不再让实时目录覆盖。
+  const hasCustomModels = Array.isArray(options.models) && options.models.length > 0
+  if (options.useLiveCatalog !== false && !hasCustomModels) {
+    try {
+      const live = await fetchModelCatalog({
+        auth: bridge.auth,
+        gatewayBaseUrl: bridge.config.gatewayBaseUrl,
+        clientType: options.clientType,
+        clientVersion: options.clientVersion,
+        timeoutMs: options.catalogTimeoutMs,
+        logger,
+      })
+      if (live.length > 0) {
+        bridge.setModels(live)
+        ctx.logger?.info?.(`[dsh-qwencode] 已从 Qoder 目录加载 ${live.length} 个模型：${live.map((model) => model.id).join(', ')}`)
+      }
+    } catch (error) {
+      ctx.logger?.warn?.(
+        `[dsh-qwencode] 拉取 Qoder 模型目录失败，沿用内置模型表：${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+  }
+
+  const cancelProviderSync = scheduleProviderRoute(ctx, options, () => bridge.models)
   ctx.effect(() => () => cancelProviderSync())
   ctx.logger?.info?.(
-    `[dsh-qwencode] 桥接服务就绪：${bridge.url}；Qoder 凭证 ${bridge.auth.status().hasAccount ? `已就绪（${bridge.auth.status().userName}）` : '缺失，请运行 qwen 登录'}`,
+    `[dsh-qwencode] 桥接服务就绪：${bridge.url}；${bridge.models.length} 个模型；Qoder 凭证 ${bridge.auth.status().hasAccount ? `已就绪（${bridge.auth.status().userName}）` : '缺失，请运行 qwen 登录'}`,
   )
 }

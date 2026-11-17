@@ -91,6 +91,22 @@ export function parseExpiry(value) {
   return Number.isFinite(parsed) ? parsed : undefined
 }
 
+/**
+ * 把 OAuth 的 `expires_in`（相对时长，通常以秒计）换算成绝对毫秒时间戳。
+ * 与 {@link parseExpiry} 的区别：后者把数字当绝对时间，直接用在 expires_in 上
+ * 会得到 1970 年，导致每个请求都触发刷新。
+ * @param {unknown} value
+ * @param {number} [now]
+ * @returns {number | undefined}
+ */
+export function expiryFromDuration(value, now = Date.now()) {
+  if (value === undefined || value === null || value === '') return undefined
+  const number = Number(value)
+  if (!Number.isFinite(number) || number <= 0) return undefined
+  // OAuth 的 expires_in 按秒计（RFC 6749）；30 天 = 2,592,000。
+  return Math.trunc(now + number * 1000)
+}
+
 /** 读 JSON 文件，失败时给出可诊断错误。 */
 function readJsonFile(filePath) {
   if (!existsSync(filePath)) {
@@ -114,6 +130,11 @@ function readJsonFile(filePath) {
   }
 }
 
+/** 判断是否为超时/主动取消；这类错误重试没有意义。 */
+function isAbortError(error) {
+  return error?.name === 'AbortError' || error?.name === 'TimeoutError' || error?.code === 'ABORT_ERR'
+}
+
 /**
  * Qoder 出站请求的重试/退避包装：网络错误与 5xx 重试一次。
  * @template T
@@ -124,6 +145,7 @@ async function withRetry(operation) {
     return await operation()
   } catch (error) {
     if (error instanceof QoderAuthError && error.code === 'invalid_grant') throw error
+    if (isAbortError(error)) throw error
     await new Promise((resolve) => setTimeout(resolve, 300))
     return operation()
   }
@@ -170,6 +192,7 @@ export class QoderAuth {
     this.now = options.now ?? Date.now
     this._refreshing = undefined
     this._account = undefined
+    this._accountKey = undefined
     this._signature = undefined
     this._refreshedAt = undefined
     this._lastError = undefined
@@ -193,6 +216,7 @@ export class QoderAuth {
   /** 丢弃内存缓存，下次访问时重新读盘。 */
   reload() {
     this._account = undefined
+    this._accountKey = undefined
     this._signature = undefined
     return this.account
   }
@@ -206,12 +230,13 @@ export class QoderAuth {
     if (this._account && signature !== undefined && signature === this._signature) return this._account
     const store = readJsonFile(this.credentialPath)
     const accounts = store.accounts && typeof store.accounts === 'object' ? store.accounts : {}
-    let account = accounts[this.region]
+    let accountKey = this.region
+    let account = accounts[accountKey]
     if (!account && Object.keys(accounts).length === 1) {
-      const onlyKey = Object.keys(accounts)[0]
-      account = accounts[onlyKey]
+      accountKey = Object.keys(accounts)[0]
+      account = accounts[accountKey]
       if (account?.region) this.region = normalizeRegion(account.region)
-      else this.region = normalizeRegion(onlyKey)
+      else this.region = normalizeRegion(accountKey)
     }
     if (!account || typeof account !== 'object') {
       throw new QoderAuthError(
@@ -226,6 +251,8 @@ export class QoderAuth {
       )
     }
     this._account = account
+    // 记住实际读到的 key（单账号兜底时可能与 region 不同），写回时不能覆盖错条目。
+    this._accountKey = accountKey
     this._signature = signature
     return account
   }
@@ -359,11 +386,13 @@ export class QoderAuth {
     }
     const now = this.now()
     const refreshToken = pickString(payload, ['refresh_token']) ?? String(account.refreshToken)
+    // expires_at 是绝对时间；expires_in 是相对秒数，不能走 parseExpiry
+    // （否则 30 天会被当成 1970 年，导致每个请求都刷新）。
     const expiresAt = parseExpiry(pickRaw(payload, ['expires_at']))
-      ?? parseExpiry(pickRaw(payload, ['expires_in']))
+      ?? expiryFromDuration(pickRaw(payload, ['expires_in']), now)
       ?? now + DEFAULT_ACCESS_TOKEN_TTL_MS
     const refreshExpiresAt = parseExpiry(pickRaw(payload, ['refresh_token_expires_at']))
-      ?? parseExpiry(pickRaw(payload, ['refresh_token_expires_in']))
+      ?? expiryFromDuration(pickRaw(payload, ['refresh_token_expires_in']), now)
     const nextAccount = {
       ...account,
       accessToken,
@@ -393,12 +422,14 @@ export class QoderAuth {
     const filePath = this.credentialPath
     const store = readJsonFile(filePath)
     const accounts = store.accounts && typeof store.accounts === 'object' ? store.accounts : {}
-    const current = accounts[this.region]
+    // 写回实际读取的账号 key，而不是可能被规范化过的 region。
+    const accountKey = this._accountKey ?? this.region
+    const current = accounts[accountKey]
     if (current && typeof current === 'object' && current.refreshToken && current.refreshToken !== expectedRefreshToken) {
       this.logger.info?.('[dsh-qwencode] 凭证文件已被其它进程更新，采用磁盘版本，跳过本次写回')
       return { ...current }
     }
-    accounts[this.region] = nextAccount
+    accounts[accountKey] = nextAccount
     const nextStore = { ...store, accounts }
     const text = `${JSON.stringify(nextStore, null, 2)}\n`
     const tmpPath = `${filePath}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`

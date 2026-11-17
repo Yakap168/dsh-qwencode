@@ -1,9 +1,12 @@
 {
   "name": "@local/dsh-qwencode",
-  "version": "0.1.0",
+  "version": "2.0.1",
   "private": true,
-  "description": "把本机 Qwen Code（Qoder 登录）的免费额度接入 DeepSeek Harness：本地桥接 + 自动注册 provider，保留思考强度与模型目录。",
+  "description": "把本机 Qwen Code（Qoder 登录）的免费额度接入 DeepSeek Harness：本地桥接 + 实时模型目录 + 自动注册 provider，保留每个模型的思考强度档位。",
   "type": "module",
+  "scripts": {
+    "test": "node --test \"tests/*.test.mjs\""
+  },
   "exports": {
     ".": "./index.js",
     "./locale/*.json": "./locale/*.json",
@@ -13,12 +16,17 @@
     "index.js",
     "src",
     "scripts",
+    "tests",
     "cordis.patch.yml",
     "locale/*.json",
     "docs",
     "icon.svg",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
+  "engines": {
+    "node": ">=20"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

@@ -12,6 +12,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
 import { QoderAuth, QoderAuthError, normalizeRegion, regionEndpoints } from './qoder-auth.mjs'
+import { VERSION } from './version.mjs'
 
 /** 与 Qwen Code 模型目录一致的默认模型清单（可在插件 config 中覆盖）。 */
 export const DEFAULT_MODELS = [
@@ -36,7 +37,9 @@ export const DEFAULT_MODELS = [
   {
     id: 'qmodel_38max',
     name: 'Qwen3.8-Max',
-    contextWindow: 1000000,
+    // Qoder 目录的 max_input_tokens 为 180000；context_config 里的 1M 是账号
+    // 预设，不是模型本身的输入上限。保守取 180000，避免 DSH 按 1M 压缩。
+    contextWindow: 180000,
     maxTokens: 128000,
     input: ['text', 'image'],
     reasoningEfforts: { 'off': 'none', low: 'low', medium: 'medium', xhigh: 'xhigh' },
@@ -45,7 +48,8 @@ export const DEFAULT_MODELS = [
   {
     id: 'qfmodel',
     name: 'Qwen3.8-Flash',
-    contextWindow: 1000000,
+    // 同 qmodel_38max：目录 max_input_tokens=180000。
+    contextWindow: 180000,
     maxTokens: 128000,
     input: ['text', 'image'],
     reasoningEfforts: { 'off': 'none', low: 'low', medium: 'medium', xhigh: 'xhigh' },
@@ -67,6 +71,12 @@ export const DEFAULT_CONFIG = {
   autoConfirmPaid: false,
   maxBodyBytes: 128 * 1024 * 1024,
   upstreamIdleTimeoutMs: 600_000,
+  /**
+   * DSH 把「off」翻译成省略 reasoning 字段（见 dsh-llm-pi-ai 的 profileOptions），
+   * 而 Qwen 的默认是开启思考。插件配置了默认档位时，把「省略」翻译成
+   * reasoning.effort="none"，off 才真正关掉思考。默认关闭，避免影响直接调用者。
+   */
+  missingReasoningMeansOff: false,
   models: DEFAULT_MODELS,
 }
 
@@ -110,8 +120,15 @@ export function buildUpstreamPayload(body, options = {}) {
   if (payload.reasoning && typeof payload.reasoning === 'object') {
     const reasoning = { ...payload.reasoning }
     delete reasoning.summary
+    // DSH 的档位 id 叫 off，真正发给 Qwen 的值是 none。
+    if (reasoning.effort === 'off') reasoning.effort = 'none'
     if (Object.keys(reasoning).length > 0) payload.reasoning = reasoning
     else delete payload.reasoning
+  }
+  // DSH 的 off 会被适配器翻译成「不带 reasoning 字段」。Qwen 自己默认开思考，
+  // 所以只省略字段并不会关掉它；插件启用该选项时补一个 none，off 才生效。
+  if (options.missingReasoningMeansOff === true && payload.reasoning === undefined) {
+    payload.reasoning = { effort: 'none' }
   }
   // Qoder 网关不接受 input 里 role=system 的消息（要求放 instructions），
   // 但接受 developer 角色；pi-ai 在 supportsDeveloperRole 时用 developer，
@@ -235,6 +252,9 @@ export function createBridge(userConfig = {}) {
   const region = normalizeRegion(config.region)
   const endpoints = regionEndpoints(region)
   const gatewayBaseUrl = String(config.gatewayBaseUrl ?? endpoints.gatewayBaseUrl).replace(/\/+$/, '')
+  // 供 index.js / selftest 复用同一个规范化后的上游地址（config 是副本，
+  // 不把 undefined 或结尾斜杠传给目录请求）。
+  config.gatewayBaseUrl = gatewayBaseUrl
   const auth = config.auth ?? new QoderAuth({
     credentialPath: config.credentialPath,
     region,
@@ -294,8 +314,13 @@ export function createBridge(userConfig = {}) {
     return headers
   }
 
+  /** 当前使用的模型表：优先目录/配置，否则内置表。 */
+  function currentModels() {
+    return Array.isArray(config.models) && config.models.length > 0 ? config.models : DEFAULT_MODELS
+  }
+
   async function handleModels(res) {
-    const models = Array.isArray(config.models) && config.models.length > 0 ? config.models : DEFAULT_MODELS
+    const models = currentModels()
     sendJson(res, 200, {
       object: 'list',
       data: models.map((model) => ({
@@ -307,9 +332,9 @@ export function createBridge(userConfig = {}) {
         context_length: model.contextWindow,
         max_output_tokens: model.maxTokens,
         modalities: { input: model.input ?? ['text'], output: ['text'] },
-        reasoning: Boolean(model.reasoningEfforts),
+        reasoning: Boolean(model.reasoningEfforts && Object.keys(model.reasoningEfforts).length > 0),
         supported_reasoning_levels: model.reasoningEfforts
-          ? Object.values(model.reasoningEfforts).filter((level) => level && level !== 'none').map((effort) => ({ effort }))
+          ? Object.entries(model.reasoningEfforts).map(([level, effort]) => ({ level, effort }))
           : [],
       })),
     })
@@ -319,12 +344,14 @@ export function createBridge(userConfig = {}) {
     sendJson(res, 200, {
       ok: true,
       service: 'dsh-qwencode-bridge',
-      version: '0.1.0',
+      version: VERSION,
       host: config.host,
       port: config.port,
       gatewayBaseUrl,
       region: auth.region,
       agentId: config.agentId,
+      modelCount: currentModels().length,
+      models: currentModels().map((model) => model.id),
       auth: auth.status(),
       stats: { ...stats, uptimeMs: startedAt ? Date.now() - startedAt : 0 },
       recentLog: recentLog.slice(-20),
@@ -495,7 +522,10 @@ export function createBridge(userConfig = {}) {
     }
     let payload
     try {
-      payload = buildUpstreamPayload(body, { sessionType: config.sessionType })
+      payload = buildUpstreamPayload(body, {
+        sessionType: config.sessionType,
+        missingReasoningMeansOff: config.missingReasoningMeansOff,
+      })
     } catch (error) {
       sendError(res, 400, error?.message ?? String(error))
       return
@@ -535,6 +565,16 @@ export function createBridge(userConfig = {}) {
     config,
     auth,
     stats,
+    /** 当前模型表（目录拉取成功后由 setModels 替换）。 */
+    get models() {
+      return currentModels()
+    },
+    /** 替换运行中的模型表；空数组忽略，避免目录异常时把可用模型清空。 */
+    setModels(next) {
+      if (!Array.isArray(next) || next.length === 0) return false
+      config.models = next
+      return true
+    },
     get address() {
       const address = server?.address()
       return address && typeof address === 'object' ? address : undefined

@@ -6,6 +6,7 @@
  * 错误映射（非法模型）。会真实请求 Qoder 网关，消耗少量额度。
  */
 import { createBridge } from '../src/bridge.mjs'
+import { fetchModelCatalog } from '../src/catalog.mjs'
 
 const args = process.argv.slice(2)
 function argValue(name, fallback) {
@@ -69,10 +70,17 @@ async function postResponses(body, { timeoutMs = 180_000 } = {}) {
 
 /** 从事件里取最终文本。 */
 function finalText(events) {
-  return events
-    .filter((event) => event.data && JSON.parse(event.data)?.type === 'response.output_text.delta')
-    .map((event) => JSON.parse(event.data).delta)
-    .join('')
+  const parts = []
+  for (const event of events) {
+    if (!event.data) continue
+    try {
+      const data = JSON.parse(event.data)
+      if (data?.type === 'response.output_text.delta' && typeof data.delta === 'string') parts.push(data.delta)
+    } catch {
+      // 非 JSON 的 SSE 注释/心跳跳过。
+    }
+  }
+  return parts.join('')
 }
 
 /** 从事件里取函数调用。 */
@@ -97,9 +105,31 @@ try {
   const url = await bridge.start()
   record('bridge.start', Boolean(url), url)
   const health = await (await fetch(`${url}/healthz`)).json()
-  record('healthz', health.ok === true, `region=${health.region} user=${health.auth?.userName ?? '?'} account=${health.auth?.hasAccount}`)
+  record('healthz', health.ok === true, `region=${health.region} user=${health.auth?.userName ?? '?'} account=${health.auth?.hasAccount} version=${health.version}`)
+
+  // 实时目录：Qoder 的模型目录不消耗推理额度，失败了仍可继续用内置表。
+  let catalog = []
+  let catalogError = ''
+  try {
+    catalog = await fetchModelCatalog({
+      auth: bridge.auth,
+      gatewayBaseUrl: bridge.config.gatewayBaseUrl,
+      clientType: '13',
+      clientVersion: '1.0.0-preview.2',
+      timeoutMs: 5_000,
+    })
+  } catch (error) {
+    catalogError = error?.message ?? String(error)
+  }
+  if (catalog.length > 0) bridge.setModels(catalog)
+  record(
+    'live_catalog',
+    catalog.length > 0,
+    catalog.length > 0 ? catalog.map((model) => `${model.id}@${model.contextWindow}`).join(' ') : catalogError,
+  )
+
   const models = await (await fetch(`${url}/v1/models`)).json()
-  record('/v1/models', Array.isArray(models.data) && models.data.length >= 4, `${models.data?.length ?? 0} models`)
+  record('/v1/models', Array.isArray(models.data) && models.data.length >= 1, `${models.data?.length ?? 0} models`)
 
   const plainStarted = Date.now()
   const plain = await postResponses({
