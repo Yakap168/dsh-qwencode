@@ -32,7 +32,7 @@ plugin_manager(action: "install_bundle", target: "D:\\ds.harness\\dsh-qwencode")
 - 通过官方 `configEditor` 把 provider `qwencode` 写入 `@deepseek-ai/dsh-llm-pi-ai` 的配置；
 - 新建会话时在模型选择器里出现 **Qwen Code · 免费额度** 分组。
 
-> 自动写配置等价于在 Models 设置页保存一次 provider 配置，会改 profile 的 `cordis.patch.yml`。不希望自动改配置时，把插件配置 `manageProviderConfig` 设为 `false`，然后按插件日志打印的 YAML 手动添加。
+> 自动写配置等价于在 Models 设置页保存一次 provider 配置，会改 profile 的 `cordis.patch.yml`。插件每次启动都会核对这条路由是否与插件版本一致（端口/模型目录/默认档位），不一致时用 configEditor 更新。不希望自动改配置时，把插件配置 `manageProviderConfig` 设为 `false`，然后按插件日志打印的 YAML 手动添加。
 
 ## 模型与思考强度
 
