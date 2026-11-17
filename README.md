@@ -12,13 +12,137 @@ DSH 会话 ──(OpenAI Responses / pi-ai)──► http://127.0.0.1:45917/v1 �
 
 桥接只做鉴权与协议适配，**不实现 agent**。工具调用、skill 读取、文件修改、子代理、目标/计划等全部由 DSH 原生完成；模型侧只负责推理与函数调用。
 
-## 前置条件
+---
+
+## 🚀 保姆级上手：从零开始接入免费额度
+
+下面按 "我什么都还没装" 的视角走一遍。全程大概 10 分钟，卡住的地方看每一步最后的 🧯。
+
+### 第 0 步：先理清三样东西
+
+想象你要开车去一个"免费的加油站"：
+
+| 角色 | 在本项目里是什么 | 你需要做什么 |
+|---|---|---|
+| 🚗 车 | **DeepSeek Harness（DSH）** | 已装好（你能看到这个插件市场就说明有了） |
+| ⛽ 免费的油站 | 你 Qoder 账号的模型额度 | 用 **Qwen Code** 登录一次，拿到"油卡" |
+| 🔌 转接头 | 本插件 `dsh-qwencode` | 装它，把"油站"接到"车"上 |
+
+**Qwen Code** 是阿里 Qwen 官方的终端编程工具，用 **Qoder 账号** 登录后，自带一份模型额度（含免费模型 `Qwen3.8-Flash`）。本插件就是把这份额度"转接"进 DSH，让你在 DSH 里像用普通模型一样用它——而且**工具调用、读文件、写代码、加载 skill 全都照常工作**。
+
+> 一句话：**Qwen Code 负责发"油卡"，插件负责把油加进 DSH 这台车。**
+
+### 第 1 步：安装 Qwen Code（拿"油卡"的前提）
+
+> 官方文档：[Qwen Code 概览](https://qwenlm.github.io/qwen-code-docs/en/users/overview/) · [快速开始](https://qwenlm.github.io/qwen-code-docs/en/users/quickstart/)
+
+**Windows（PowerShell 一行装，推荐）**：
+
+```powershell
+irm https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.ps1 | iex
+```
+
+**Linux / macOS**：
+
+```bash
+curl -fsSL https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh | bash
+```
+
+装完后**关掉终端再开一个新的**（让 `qwen` 命令进 PATH），然后验证：
+
+```powershell
+qwen --version      # 能打印版本号就成功，例如 1.0.0-preview.2
+```
+
+> 脚本会优先下"独立可执行文件"，没有的话回退到 npm（需要 Node.js 22+）。如果你更习惯 npm：`npm install -g @qwen-code/qwen-code`。
+
+🧯 **卡住？**
+- `qwen` 不是命令 → 重开终端；还不行就用 `where qwen`（Windows）/ `which qwen`（mac/Linux）找它装到哪了，手动把目录加进 PATH。
+- 公司网络装不动 → 换手机热点再试，或改用上面注释里的 npm 方式。
+
+### 第 2 步：用 Qoder 账号登录（真正领到"油卡"）
+
+在终端直接输入 `qwen` 进入交互界面，然后：
+
+```text
+/auth
+```
+
+会弹出一个菜单，选 **Qwen 账号 / Qoder 登录** 那一项（"Qwen Account with Subscription" 之类），它会：
+
+1. 给出一个**设备码 + 授权链接**（并尽量自动帮你打开浏览器）；
+2. 你在浏览器里确认、登录 Qoder 账号；
+3. 回到终端，看到登录成功的提示即可。
+
+登录成功后，**别急着关**——先在里面敲一句验证额度能用：
+
+```text
+你好，用一句话介绍你自己
+```
+
+能正常回话，就说明"油卡"到手了。此时输入 `/quit` 或 `Ctrl+C` 退出即可。
+
+🧯 **卡住？**
+- 浏览器没自动弹 → 复制终端里那条链接，手动粘到浏览器。
+- 提示没有订阅/计划 → 你登录的 Qoder 账号可能没有可用计划；换个账号，或先确认账号状态。
+- 登录成功后仍想确认"油卡"在不在，可以看文件：`%USERPROFILE%\.qwen\qoder_oauth_creds.json`（Windows）或 `~/.qwen/qoder_oauth_creds.json`（mac/Linux）。**这个文件是隐私文件，别分享、别提交到 git。**
+
+### 第 3 步：把这个插件装进 DSH
+
+**方式 A：DSH 界面安装（对新手最友好）**
+
+打开 DSH 的 **Plugins（插件）** 页面 → **Add plugin / 安装本地插件** → 选中本仓库目录（`dsh-qwencode` 文件夹）→ 安装并启用。
+
+**方式 B：在 DSH 会话里让 AI 帮你装**
+
+在 DSH 新建一个会话，直接说：
+
+```text
+把本地目录 D:\ds.harness\dsh-qwencode 作为插件安装并启用
+```
+
+（对应工具调用是 `plugin_manager(action: "install_bundle", target: "<本仓库绝对路径>")`。）
+
+装好之后，插件会自动做三件事，你**什么都不用配**：
+
+- 在本机 `127.0.0.1:45917` 起一个"转接服务"；
+- 把 `qwencode` 这个模型来源注册进 DSH；
+- 在**模型选择器**里多出一个分组：**Qwen Code · 免费额度**。
+
+> 插件每次启动都会核对这份配置是否最新（端口/模型目录/默认档位），不一致会自动更新；等价于你在 Models 设置页手动保存一次。不想让它自动改，把插件配置 `manageProviderConfig` 设为 `false`，日志会打印可手动粘贴的 YAML。
+
+### 第 4 步：开始用（爽点在这里）
+
+1. 在 DSH **新建会话**；
+2. 点开**模型选择器**，找到 **Qwen Code · 免费额度**，挑一个：
+   - `Qwen3.8-Flash`：**免费**、快，日常首选；
+   - `Qwen4-Max` / `Qwen3.8-Max`：更强，是否免费取决于你的 Qwen 计划。
+3. 随便派个活给它，比如：
+
+   ```text
+   帮我在当前目录建一个 hello.py，打印 1 到 10 的和，然后运行它。
+   ```
+
+   你会看到它**真的去调工具、写文件、跑命令**，还会展示"思考过程"——和用官方 API 一模一样。
+
+### 第 5 步：确认一切正常（可选，30 秒）
+
+```powershell
+# 看转接服务是否活着（会返回版本、模型列表、凭证状态）
+curl http://127.0.0.1:45917/healthz
+```
+
+返回里 `ok: true`、`models` 有 4 个、`auth.hasAccount: true`，就说明全链路通了。
+
+---
+
+## 前置条件（速查）
 
 1. 本机安装并登录 Qwen Code：`qwen` 命令可运行，且已通过 `/auth` 用 Qoder 账号登录。
 2. 凭证文件存在：`%USERPROFILE%\.qwen\qoder_oauth_creds.json`（`accounts.cn` 或 `accounts.global` 下有 `accessToken`/`refreshToken`）。
 3. DSH 0.2.x（本项目针对 0.2.2-rc.3 开发验证）。
 
-## 安装
+## 安装（技术版速查）
 
 在 DSH 里用 Plugin Manager 安装本地目录：
 
@@ -132,6 +256,8 @@ dsh-qwencode/
 - **provider 没出现在模型选择器**：查看 `%TEMP%\dsh-qwencode\provider-sync.json` 里的自动注册诊断（最近的尝试、失败原因）；把插件配置 `manageProviderConfig` 设为 `false` 后按日志打印的 YAML 手动添加。
 - **凭证缺失/过期**：`curl http://127.0.0.1:45917/healthz` 的 `auth` 字段会给出状态与错误；运行 `qwen` 后执行 `/auth` 重新登录即可。
 - **额度/付费确认**：上游返回 `MODEL_PAID_CONFIRM_REQUIRED` 时桥接返回 402 并说明；需要自动确认时把 `autoConfirmPaid` 设为 `true`（会消耗付费额度）。
+- **模型回话但不动手（不调工具）**：确认选中的是 `Qwen Code · 免费额度` 分组里的模型，而不是别的 provider；再确认会话权限允许执行工具（不是纯聊天模式）。
+- **改了 `src/*.mjs` 不生效**：插件模块需要重装/重启才加载新代码（见「开发」）。
 
 ## 安全说明
 
