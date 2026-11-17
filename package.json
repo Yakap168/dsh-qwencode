@@ -1,0 +1,27 @@
+{
+  "name": "@local/dsh-qwencode",
+  "version": "0.1.0",
+  "private": true,
+  "description": "把本机 Qwen Code（Qoder 登录）的免费额度接入 DeepSeek Harness：本地桥接 + 自动注册 provider，保留思考强度与模型目录。",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "src",
+    "scripts",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "docs",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

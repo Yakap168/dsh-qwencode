@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Qwen Code bridge">
+  <title>Qwen Code bridge</title>
+  <rect x="4" y="4" width="120" height="120" rx="26" fill="#0B1B4D"/>
+  <path d="M32 86 Q64 34 96 86" fill="none" stroke="#E8EEFF" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="32" cy="86" r="11" fill="#4D7CFE"/>
+  <circle cx="96" cy="86" r="11" fill="#4D7CFE"/>
+  <circle cx="32" cy="86" r="5" fill="#0B1B4D"/>
+  <circle cx="96" cy="86" r="5" fill="#0B1B4D"/>
+  <path d="M64 96 L64 112" stroke="#7EA0FF" stroke-width="6" stroke-linecap="round"/>
+  <path d="M56 108 L64 116 L72 108" fill="none" stroke="#7EA0FF" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

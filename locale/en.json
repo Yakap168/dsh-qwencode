@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Qwen Code quota",
+    "description": "Brings this machine's Qwen Code (Qoder sign-in) model quota into DSH through a local bridge that handles Qoder OAuth and the OpenAI Responses protocol, auto-registers the provider, keeps each model's reasoning-effort levels, and refreshes tokens automatically.",
+    "detail": "docs/DETAIL.md"
+  }
+}

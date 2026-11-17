@@ -1,0 +1,5 @@
+- insert:
+    - id: qwencode
+      name: '@local/dsh-qwencode'
+      config:
+        port: 45917
