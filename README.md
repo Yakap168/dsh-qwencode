@@ -1,8 +1,8 @@
 # dsh-qwencode
 
-把本机 **Qwen Code**（`qwen` CLI 1.0 preview，Qoder 账号登录）的免费额度作为 DeepSeek Harness 的模型 provider（路由键 `qwencode`）接入。当前版本 **1.0.1-rc.1**（release candidate），变更见 [CHANGELOG.md](./CHANGELOG.md)。
+把本机 **Qwen Code**（`qwen` CLI 1.0 preview，Qoder 账号登录）的免费额度作为 DeepSeek Harness 的模型 provider（路由键 `qwencode`）接入。当前版本 **1.0.1**（正式版），变更见 [CHANGELOG.md](./CHANGELOG.md)。
 
-> 1.0.1-rc.1 新增 **`/qwen-login` 插件内登录**：不用离开 DSH、不用在终端里运行 Qwen Code，浏览器授权一次即可拿到免费额度（见「🔑 插件内登录」）。
+> **1.0.1 正式版**包含 **`/qwen-login` 插件内登录**：不用离开 DSH、不用在终端里运行 Qwen Code，浏览器授权一次即可拿到免费额度；支持 `cn` / `global` 区域选择（见「🔑 插件内登录」）。
 
 插件附赠一个只监听 `127.0.0.1` 的桥接服务：
 
@@ -145,7 +145,7 @@ curl http://127.0.0.1:45917/healthz
 
 ## 🔑 插件内登录：`/qwen-login`
 
-**这是 1.0.1-rc.1 新增的登录入口。** 不需要终端、不需要在终端里运行 Qwen Code，在 DSH 里一条命令就能完成 Qoder OAuth 登录。
+**这是 1.0.1 正式版提供的登录入口（支持 cn / global 区域选择）。** 不需要终端、不需要在终端里运行 Qwen Code，在 DSH 里一条命令就能完成 Qoder OAuth 登录。
 
 ### 第一次登录（3 步）
 
@@ -169,11 +169,35 @@ curl http://127.0.0.1:45917/healthz
 
 | 命令 | 作用 |
 |---|---|
-| `/qwen-login` | 未登录时发起登录；已登录时显示当前账号状态 |
-| `/qwen-login status` | 查看登录状态、账号、Access Token 到期时间 |
-| `/qwen-login relogin` | 强制重新登录（切换 Qoder 账号时用） |
+| `/qwen-login` | 未登录时发起登录；已登录时显示当前区域、账号和已保存账号列表 |
+| `/qwen-login status` | 查看当前区域、当前账号和已保存区域账号 |
+| `/qwen-login cn` | 登录**中国区**（`qoder.cn` / `openapi.qoder.com.cn`） |
+| `/qwen-login global` | 登录**国际区**（`qoder.com` / `openapi.qoder.sh`） |
+| `/qwen-login use cn` | 切换到已登录的中国区账号（运行时生效） |
+| `/qwen-login use global` | 切换到已登录的国际区账号（运行时生效） |
+| `/qwen-login relogin [cn\|global]` | 重新登录指定区域（不写区域则沿用当前区域） |
 | `/qwen-login open` | 重新打开当前授权页 |
 | `/qwen-login cancel` | 取消进行中的登录 |
+
+### 选择区域：中国区 / 国际区
+
+插件支持两个 Qoder 区域，登录时按区域分别保存，**互不覆盖**：
+
+| 区域 | 授权网站 | API 端点 | 凭证条目 |
+|---|---|---|---|
+| `cn` 中国区 | `qoder.cn` | `openapi.qoder.com.cn` | `accounts.cn` |
+| `global` 国际区 | `qoder.com` | `openapi.qoder.sh` | `accounts.global` |
+
+**怎么选：**
+
+1. 想登录哪个区域，就直接运行对应命令：
+   - 中国区：`/qwen-login cn`
+   - 国际区：`/qwen-login global`
+2. 登录成功后，插件会**自动把当前使用区域切到刚登录的区域**，并立即生效。
+3. 之后想换回另一个已登录账号，运行 `/qwen-login use cn` 或 `/qwen-login use global`，不需要重新登录。
+4. `/qwen-login status` 会列出两个区域已保存的账号和到期时间，方便确认。
+
+> **永久默认区域**：`use` 的切换只在本次 DSH 运行期间有效。想重启后仍默认使用国际区，把插件配置 `region` 设为 `global`（中国区设为 `cn`），然后重载插件/重启 DSH。两个区域的模型目录可能略有差异（国际区实测为 `qmodel_latest`、`qmodel_38max`、`qfmodel`），切换区域后建议重启一次 DSH 让模型目录按新区域重新拉取。
 
 ### 给脚本 / 自动化用：HTTP 端点
 
@@ -286,6 +310,8 @@ pwsh -File scripts\run-node.ps1 scripts\selftest.mjs --model qfmodel
 `selftest.mjs` 覆盖：healthz、实时模型目录、模型列表、纯文本+思考流、工具调用、工具结果回传、错误映射。单元测试覆盖请求清洗、Qoder 目录映射、token 刷新（含 `expires_in` 与并发轮换）、provider 配置生成，以及 `/qwen-login` 的 PKCE、轮询、凭证写回与桥接登录端点。
 
 已在 DSH 0.2.2-rc.3 的桌面 profile 实测：
+- **1.0.1 正式版**：汇聚 rc.1 / rc.2 内容，交付插件内登录 `/qwen-login`（含 `cn` / `global` 区域选择、`use` 运行时切换、动态网关）与完整新手使用说明；全套 48 项测试 PASS，2 位 reviewer 独立审查通过（含修复复核）。
+- **1.0.1-rc.2**：新增 `/qwen-login cn`、`/qwen-login global`、`/qwen-login use cn|global` 区域选择命令；`status` 同时列出两个区域已保存账号；登录成功后自动切换运行中的区域，上游网关按 `auth.region` 动态切换（不再出现 global token 打 cn 网关）。补充 README「选择区域：中国区 / 国际区」。单元测试 48 项全 PASS（新增 2 项区域命令与网关切换测试）。
 - **1.0.1-rc.1**：单元测试 46 项全 PASS（新增 19 项登录流程测试：PKCE 生成、轮询 404 等待/成功映射、缺 refresh_token、非 404/非法 JSON 错误、凭证写回与多地域合并、版本校验与写失败、登录管理器成功/取消/超时、浏览器打开、命令 handler 分支与卸载、桥接 `/login/*` 端点及完整成功流程）；真实网络验证 `/login/start` 返回合法 `authUrl`（`qoder.cn/device/selectAccounts?sourceType=QwenCode...`），`/login/status` 在未完成浏览器授权时保持 `pending`（官方轮询返回 404），`/login/cancel` 正常。
 - **1.0.0-rc.1**：单元测试 20 项全 PASS；独立 `selftest.mjs` 8 项全 PASS，其中 `live_catalog` 从 Qoder 拉到 4 个模型（`qmodel_38max@180000`、`qfmodel@180000`），文本+思考流、工具调用、工具结果回传与错误映射均通过。另实测：不带 `reasoning` 字段请求 `qfmodel` 时上游返回 18 个思考增量（Qwen 默认开启）；带 `reasoning.effort="none"` 时返回 0 个思考增量，证明 `off` 映射有效。
 - 0.1.0 安装即生效：`dsh-plugin` 行状态 active，`/healthz` 正常，provider 配置自动写入 profile patch；2026-11-17 17:08 桥接随本次 DSH 启动重新拉起并正常服务，说明已安装 bundle 的持久化生效。

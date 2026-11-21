@@ -13,6 +13,7 @@
 import { createBridge, DEFAULT_MODELS } from './src/bridge.mjs'
 import { fetchModelCatalog } from './src/catalog.mjs'
 import { recordDiagnostic } from './src/diagnostics.mjs'
+import { readCredentialStore } from './src/qoder-login.mjs'
 
 export const name = 'dsh-qwencode'
 /** 依赖 DSH 的命令注册表；桌面/Web/headless 都由 dsh-base 提供 commands。 */
@@ -300,19 +301,62 @@ export function registerQwenLoginCommand(ctx, bridge, logger) {
       return new Date(value).toISOString()
     }
   }
+  /** 读取凭证文件里各区域账号（只读，不打印 token）。 */
+  const listAccounts = () => {
+    try {
+      const store = readCredentialStore(bridge.login.credentialPath)
+      return Object.entries(store.accounts)
+        .filter(([, account]) => account && typeof account === 'object')
+        .map(([region, account]) => ({
+          region,
+          userName: account.userName || '未知',
+          expiresAt: Number(account.expiresAt) || undefined,
+        }))
+    } catch {
+      return []
+    }
+  }
   const statusText = () => {
     const auth = bridge.auth.status()
-    if (!auth.hasAccount) {
-      return '❌ 还没有 Qwen Code 登录凭证。\n运行 /qwen-login 打开浏览器完成登录（免费额度需要 Qoder 账号）。'
+    const accounts = listAccounts()
+    const lines = auth.hasAccount
+      ? [
+          '✅ 已登录 Qwen Code',
+          `当前使用区域：${auth.region}`,
+          `当前账号：${auth.userName || '未知'}`,
+          `Access Token 到期：${formatTime(auth.accessTokenExpiresAt)}`,
+        ]
+      : ['❌ 还没有可用的 Qwen Code 登录凭证。']
+    if (accounts.length > 0) {
+      lines.push('', '已保存的账号：')
+      for (const item of accounts) {
+        lines.push(`- ${item.region}：${item.userName}${item.expiresAt ? `（到期 ${formatTime(item.expiresAt)}）` : ''}`)
+      }
     }
-    return [
-      '✅ 已登录 Qwen Code',
-      `账号：${auth.userName || '未知'}`,
-      `Region：${auth.region}`,
-      `Access Token 到期：${formatTime(auth.accessTokenExpiresAt)}`,
+    lines.push(
       '',
-      '要切换账号或重新登录，运行 /qwen-login relogin。',
-    ].join('\n')
+      '登录 / 选择区域：',
+      '  /qwen-login cn          登录中国区（qoder.cn）',
+      '  /qwen-login global      登录国际区（qoder.com）',
+      '  /qwen-login use cn      切换到已登录的中国区账号',
+      '  /qwen-login use global  切换到已登录的国际区账号',
+      '  /qwen-login relogin [cn|global]  重新登录指定区域',
+    )
+    return lines.join('\n')
+  }
+  /** 切换当前使用的区域（要求该区域已有凭证）。 */
+  const useRegion = (region) => {
+    const normalized = region === 'global' ? 'global' : 'cn'
+    const account = listAccounts().find((item) => item.region === normalized)
+    if (!account) {
+      return { kind: 'error', text: `❌ ${normalized} 区域还没有登录账号，请先运行 /qwen-login ${normalized}。` }
+    }
+    try {
+      bridge.setRegion(normalized)
+    } catch (error) {
+      return { kind: 'error', text: `❌ 切换到 ${normalized} 失败：${error?.message ?? error}` }
+    }
+    return { kind: 'success', text: `✅ 已切换到 ${normalized} 区域\n${statusText()}` }
   }
   const waitForLogin = async (session, signal) => {
     const deadline = Date.now() + 120_000
@@ -323,10 +367,18 @@ export function registerQwenLoginCommand(ctx, bridge, logger) {
       }
       const status = bridge.login.status(session.id)
       if (status.status === 'success') {
+        // 登录完成后自动把运行中的桥接切到刚登录的区域（含上游网关）。
+        try {
+          bridge.setRegion(status.region)
+        } catch {
+          // 自动切换失败不影响凭证已写入；用户可稍后 /qwen-login use <region>。
+        }
         return {
           kind: 'success',
           text: [
             `✅ 登录成功：${status.userName || 'Qwen 用户'}`,
+            `区域：${status.region}`,
+            `当前使用区域已切换为：${status.region}`,
             `凭证已写入 ${bridge.login.credentialPath}`,
             '现在可以在模型选择器里使用「Qwen Code · 免费额度」了。',
           ].join('\n'),
@@ -347,44 +399,60 @@ export function registerQwenLoginCommand(ctx, bridge, logger) {
       ].join('\n'),
     }
   }
+  const startLogin = async (region, signal) => {
+    const session = bridge.login.start(region ? { region } : {})
+    const intro = [
+      `🔐 已打开浏览器，请在页面中完成 Qwen Code / Qoder 登录（区域：${session.region}）。`,
+      `授权链接：${session.authUrl}`,
+      '浏览器没有自动打开时，把上面的链接复制到浏览器即可。',
+      '',
+      '登录完成后本命令会自动返回结果（最多等待 2 分钟）…',
+    ].join('\n')
+    const result = await waitForLogin(session, signal)
+    return result.kind === 'success' ? result : { kind: 'error', text: `${intro}\n\n${result.text}` }
+  }
   const disposeCommand = commands.register({
     name: 'qwen-login',
-    description: '登录 Qwen Code（Qoder 免费额度），或查看登录状态',
-    input: { hint: '[status|relogin|open|cancel]' },
+    description: '登录 Qwen Code（Qoder 免费额度），或查看登录状态、选择区域',
+    input: { hint: '[status|cn|global|use cn|use global|relogin [cn|global]|open|cancel]' },
     handler: async ({ rawInput, signal }) => {
       if (disposed) return { kind: 'error', text: '插件已卸载，/qwen-login 暂不可用。' }
       const input = String(rawInput ?? '').trim().toLowerCase()
-      if (input === 'status') {
+      const parts = input.split(/\s+/u).filter(Boolean)
+      const action = parts[0] ?? ''
+      const regionArg = parts.find((part) => part === 'cn' || part === 'global')
+      if (action === 'status') {
         return bridge.auth.status().hasAccount
           ? { kind: 'success', text: statusText() }
           : { kind: 'error', text: statusText() }
       }
-      if (input === 'cancel') {
+      if (action === 'cancel') {
         const cancelled = bridge.login.cancel()
         return cancelled
           ? { kind: 'success', text: '已取消进行中的 Qwen Code 登录。' }
           : { kind: 'error', text: '当前没有进行中的登录。' }
       }
-      if (input === 'open') {
+      if (action === 'open') {
         const opened = bridge.login.open()
         return opened
           ? { kind: 'success', text: '已重新打开 Qwen Code 授权页。' }
           : { kind: 'error', text: '当前没有进行中的登录，请先运行 /qwen-login。' }
       }
-      const force = input === 'relogin' || input === 'force'
-      if (!force && bridge.auth.status().hasAccount) {
-        return { kind: 'success', text: statusText() }
+      if (action === 'use') {
+        if (!regionArg) return { kind: 'error', text: '用法：/qwen-login use cn  或  /qwen-login use global' }
+        return useRegion(regionArg)
       }
-      const session = bridge.login.start()
-      const intro = [
-        '🔐 已打开浏览器，请在页面中完成 Qwen Code / Qoder 登录。',
-        `授权链接：${session.authUrl}`,
-        '浏览器没有自动打开时，把上面的链接复制到浏览器即可。',
-        '',
-        '登录完成后本命令会自动返回结果（最多等待 2 分钟）…',
-      ].join('\n')
-      const result = await waitForLogin(session, signal)
-      return result.kind === 'success' ? result : { kind: 'error', text: `${intro}\n\n${result.text}` }
+      if (action === 'relogin') return startLogin(regionArg, signal)
+      if (action === 'cn' || action === 'global') return startLogin(action, signal)
+      if (action === 'login') return startLogin(regionArg, signal)
+      if (action !== '') {
+        return {
+          kind: 'error',
+          text: '未知子命令。用法：/qwen-login [status|cn|global|use cn|use global|relogin [cn|global]|open|cancel]',
+        }
+      }
+      if (bridge.auth.status().hasAccount) return { kind: 'success', text: statusText() }
+      return startLogin(undefined, signal)
     },
   })
   return () => {
@@ -441,7 +509,7 @@ export async function apply(ctx, config) {
     try {
       const live = await fetchModelCatalog({
         auth: bridge.auth,
-        gatewayBaseUrl: bridge.config.gatewayBaseUrl,
+        gatewayBaseUrl: bridge.gatewayBaseUrl,
         clientType: options.clientType,
         clientVersion: options.clientVersion,
         timeoutMs: options.catalogTimeoutMs,

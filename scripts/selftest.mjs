@@ -113,7 +113,7 @@ try {
   try {
     catalog = await fetchModelCatalog({
       auth: bridge.auth,
-      gatewayBaseUrl: bridge.config.gatewayBaseUrl,
+      gatewayBaseUrl: bridge.gatewayBaseUrl,
       clientType: '13',
       clientVersion: '1.0.0-preview.2',
       timeoutMs: 5_000,

@@ -296,11 +296,11 @@ export function createBridge(userConfig = {}) {
   const config = { ...DEFAULT_CONFIG, ...userConfig }
   const logger = config.logger ?? console
   const region = normalizeRegion(config.region)
-  const endpoints = regionEndpoints(region)
-  const gatewayBaseUrl = String(config.gatewayBaseUrl ?? endpoints.gatewayBaseUrl).replace(/\/+$/, '')
-  // 供 index.js / selftest 复用同一个规范化后的上游地址（config 是副本，
-  // 不把 undefined 或结尾斜杠传给目录请求）。
-  config.gatewayBaseUrl = gatewayBaseUrl
+  // 仅当用户显式配置 gatewayBaseUrl 时固定；否则跟随 auth.region 动态取端点。
+  const explicitGatewayBaseUrl = typeof config.gatewayBaseUrl === 'string' && config.gatewayBaseUrl.trim()
+    ? config.gatewayBaseUrl.replace(/\/+$/, '')
+    : undefined
+  config.gatewayBaseUrl = explicitGatewayBaseUrl
   const auth = config.auth ?? new QoderAuth({
     credentialPath: config.credentialPath,
     region,
@@ -350,9 +350,14 @@ export function createBridge(userConfig = {}) {
     target?.(`[dsh-qwencode] ${message}${extra ? ` ${JSON.stringify(extra)}` : ''}`)
   }
 
-  function upstreamUrl() {
+  /** 当前区域对应的上游网关；显式配置优先。 */
+  function gatewayBaseUrlFor(regionName) {
+    return explicitGatewayBaseUrl ?? regionEndpoints(regionName).gatewayBaseUrl.replace(/\/+$/, '')
+  }
+
+  function upstreamUrl(regionName = auth.region) {
     const query = new URLSearchParams({ AgentId: config.agentId })
-    return `${gatewayBaseUrl}/api/v1/responses?${query.toString()}`
+    return `${gatewayBaseUrlFor(regionName)}/api/v1/responses?${query.toString()}`
   }
 
   function upstreamHeaders(token, body, requestId, sessionId, forcePaidConfirmation = false) {
@@ -427,7 +432,7 @@ export function createBridge(userConfig = {}) {
       version: VERSION,
       host: config.host,
       port: config.port,
-      gatewayBaseUrl,
+      gatewayBaseUrl: gatewayBaseUrlFor(auth.region),
       region: auth.region,
       agentId: config.agentId,
       modelCount: currentModels().length,
@@ -538,16 +543,22 @@ export function createBridge(userConfig = {}) {
   /** 转发一次推理请求。 */
   async function forwardInference(payload, { res, req, sessionId, requestId, forcePaidConfirmation = false, retriedAuth = false }) {
     let token
-    try {
-      token = await auth.getAccessToken({ forceRefresh: retriedAuth })
-    } catch (error) {
-      stats.failedRequests += 1
-      stats.lastError = error instanceof Error ? error.message : String(error)
-      const message = error instanceof QoderAuthError
-        ? error.message
-        : `获取 Qoder 凭证失败：${error?.message ?? error}`
-      sendError(res, 401, message, { code: error instanceof QoderAuthError ? error.code : 'auth_failed' })
-      return
+    let requestRegion = auth.region
+    // 切区与取 token 可能交错：token 与上游网关必须属于同一区域，变化则重取一次。
+    for (let attempt = 0; attempt <= 2; attempt += 1) {
+      requestRegion = auth.region
+      try {
+        token = await auth.getAccessToken({ forceRefresh: retriedAuth })
+      } catch (error) {
+        stats.failedRequests += 1
+        stats.lastError = error instanceof Error ? error.message : String(error)
+        const message = error instanceof QoderAuthError
+          ? error.message
+          : `获取 Qoder 凭证失败：${error?.message ?? error}`
+        sendError(res, 401, message, { code: error instanceof QoderAuthError ? error.code : 'auth_failed' })
+        return
+      }
+      if (auth.region === requestRegion || attempt === 2) break
     }
     const controller = new AbortController()
     const onClose = () => {
@@ -555,7 +566,7 @@ export function createBridge(userConfig = {}) {
     }
     res.on('close', onClose)
     try {
-      const upstream = await (config.fetchImpl ?? fetch)(upstreamUrl(), {
+      const upstream = await (config.fetchImpl ?? fetch)(upstreamUrl(requestRegion), {
         method: 'POST',
         headers: upstreamHeaders(token, payload, requestId, sessionId, forcePaidConfirmation),
         body: JSON.stringify(payload),
@@ -708,6 +719,22 @@ export function createBridge(userConfig = {}) {
       config.models = next
       return true
     },
+    /** 当前区域对应的上游网关（跟随 auth.region 动态变化）。 */
+    get gatewayBaseUrl() {
+      return gatewayBaseUrlFor(auth.region)
+    },
+    /**
+     * 切换当前使用区域：更新鉴权区域、登录管理器和后续推理网关。
+     * 调用方需确认该区域已有凭证。
+     */
+    setRegion(nextRegion) {
+      const normalized = normalizeRegion(nextRegion)
+      auth.region = normalized
+      auth.reload?.()
+      login.region = normalized
+      login.requestedRegion = normalized
+      return gatewayBaseUrlFor(normalized)
+    },
     get address() {
       const address = server?.address()
       return address && typeof address === 'object' ? address : undefined
@@ -756,7 +783,7 @@ export function createBridge(userConfig = {}) {
         server.once('listening', onListening)
         server.listen(config.port, config.host)
       })
-      log('info', `桥接服务已启动 ${this.url}（region=${auth.region}，上游 ${gatewayBaseUrl}）`)
+      log('info', `桥接服务已启动 ${this.url}（region=${auth.region}，上游 ${gatewayBaseUrlFor(auth.region)}）`)
       return this.url
     },
     /** 停止 HTTP 服务并断开所有连接。 */

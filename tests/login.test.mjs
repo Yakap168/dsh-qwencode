@@ -248,6 +248,42 @@ test('writeLoginCredentials：写入失败时抛可读错误且不留下临时�
   )
 })
 
+test('bridge.setRegion 动态切换上游网关', async (t) => {
+  const calls = []
+  const bridge = createBridge({
+    port: 0,
+    region: 'cn',
+    auth: {
+      region: 'cn',
+      reload() {},
+      status: () => ({ hasAccount: true, region: 'cn' }),
+      getAccessToken: async () => 'test-token',
+    },
+    openBrowserOnLogin: false,
+    logger: silentLogger,
+    fetchImpl: async (url) => {
+      calls.push(String(url))
+      return new Response('data: {"type":"response.completed"}\n\n', {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      })
+    },
+  })
+  await bridge.start()
+  t.after(() => bridge.stop())
+  assert.equal(bridge.gatewayBaseUrl, 'https://gateway.qoder.com.cn/qsvr')
+  bridge.setRegion('global')
+  assert.equal(bridge.gatewayBaseUrl, 'https://api2.qoder.sh/qsvr')
+  const response = await fetch(`${bridge.url}/v1/responses`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'qfmodel', input: [{ role: 'user', content: 'hi' }] }),
+  })
+  await response.text()
+  assert.equal(calls.length, 1)
+  assert.match(calls[0], /^https:\/\/api2\.qoder\.sh\/qsvr\/api\/v1\/responses\?/)
+})
+
 test('openExternalUrl 按平台调用系统浏览器', () => {
   const calls = []
   const spawnImpl = (command, args, options) => {

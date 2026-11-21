@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.0.1 — 2026-11-21
+
+首个正式版（stable release），汇总 1.0.1-rc.1 / 1.0.1-rc.2 的全部内容。
+
+### 插件内登录 `/qwen-login`
+
+- 复刻 qwen-code 1.0.0-preview.2 的 Qoder 官方 OAuth：PKCE（`verifier`/`challenge`/`nonce`）+ `GET /api/v1/deviceToken/poll` 轮询（404 = 等待授权）。
+- 浏览器授权成功后按 Qwen Code CLI 同一 schema 写入 `~/.qwen/qoder_oauth_creds.json` 并热加载，不需要重启 DSH。
+- 支持 `status` / `cn` / `global` / `use cn|global` / `relogin [cn|global]` / `open` / `cancel`。
+- 中国区与国际区账号分别保存在 `accounts.cn` / `accounts.global`，互不覆盖；登录成功自动切换当前使用区域，上游网关按 `auth.region` 动态切换。
+
+### 桥接与配置
+
+- 新增本地端点 `/login/start`、`/login/status`、`/login/cancel`；`/healthz` 增加 `login` 状态。
+- 新增配置项 `clientId`、`loginTimeoutMs`、`loginPollIntervalMs`、`openBrowserOnLogin`。
+
+### 质量与安全
+
+- 48 项 `node:test` 单元测试全 PASS（含登录、区域命令、动态网关、凭证写回、错误/超时路径）。
+- 两轮独立代码审查（agent-9 / agent-10），均 pass；审查发现的 verifier 去敏、commands 注入时序、区域切换网关错配等问题均已修复并复核。
+- 登录接口仅监听 `127.0.0.1`；`/healthz` 默认不暴露用户名与凭证路径；错误/日志去敏。
+- 实测：国际区账号登录成功（`accounts.global`），国际区 token 可拉取模型目录；推理请求命中 `api2.qoder.sh`（qfmodel 返回 Qoder `RESOURCE_LIMIT` 排队，属账号额度侧限制）。
+- README 新增「🔑 插件内登录」与「选择区域：中国区 / 国际区」完整使用说明。
+
+## 1.0.1-rc.2 — 2026-11-21
+
+- 新增区域选择命令：`/qwen-login cn`（中国区 `qoder.cn`）、`/qwen-login global`（国际区 `qoder.com`）、`/qwen-login use cn|global`（切换已登录区域）。
+- 登录成功后自动把运行中的桥接切到刚登录的区域；`/qwen-login status` 同时列出两个区域已保存的账号与到期时间。
+- 修复区域切换后上游网关不跟随的问题：`upstreamUrl()` 按 `auth.region` 动态取 `gatewayBaseUrl`（仅在显式配置 `gatewayBaseUrl` 时固定），避免 global token 打 cn 网关；推理取 token 时对区域切换做了重试保护。
+- `cn` / `global` 凭证分别保存在 `accounts.cn` / `accounts.global`，互不覆盖。
+- README 新增「选择区域：中国区 / 国际区」说明与全部子命令表。
+- 新增 2 项区域命令/网关切换单元测试；全套 48 项测试通过。
+- 实测：国际区账号登录成功（`qoder.com`），凭证写入 `accounts.global`；国际区 token 可拉取模型目录 `qmodel_latest` / `qmodel_38max` / `qfmodel`。
+
 ## 1.0.1-rc.1 — 2026-11-21
 
 - 新增 **`/qwen-login` 插件内登录**：在 DSH 输入框直接发起 Qoder OAuth 登录，浏览器授权后自动写回凭证，不用离开 DSH，也不用在终端里运行 Qwen Code。

@@ -1,6 +1,6 @@
 # Qwen Code 免费额度
 
-把本机 **Qwen Code**（用 Qoder 账号登录的 `qwen` CLI，版本 1.0 preview 及以后）的模型额度，作为 DeepSeek Harness 的一个模型 provider（路由键 `qwencode`）接入。当前版本 **1.0.1-rc.1**（release candidate）。
+把本机 **Qwen Code**（用 Qoder 账号登录的 `qwen` CLI，版本 1.0 preview 及以后）的模型额度，作为 DeepSeek Harness 的一个模型 provider（路由键 `qwencode`）接入。当前版本 **1.0.1**（正式版）。
 
 插件本身不实现 agent：工具调用、skill 读取、文件修改、子代理等全部由 DSH 原生完成；本插件只做两件事：
 
@@ -27,7 +27,7 @@ Qwen4-Max / Qwen3.8-Max / Qwen3.8-Flash（账号额度由 Qwen Code 的计划决
 
 - 有可用的 Qoder 账号（Qwen Code 的免费额度由该账号计划决定）。
 - 登录方式任选其一：
-  - 在 DSH 输入框运行 **`/qwen-login`**，浏览器授权后自动写入凭证（推荐，1.0.1-rc.1 新增）；
+  - 在 DSH 输入框运行 **`/qwen-login`**，浏览器授权后自动写入凭证（推荐；1.0.1 正式版提供，支持 `/qwen-login cn` / `global` 区域选择）；
   - 或者安装并登录 Qwen Code CLI（`qwen` 命令），在交互界面执行 `/auth`，然后重启 DSH 或重载插件。
 - 凭证文件位置：`~/.qwen/qoder_oauth_creds.json`（`accounts.cn` 或 `accounts.global` 下有 `accessToken` / `refreshToken`）。
 
@@ -68,7 +68,7 @@ Qwen4-Max / Qwen3.8-Max / Qwen3.8-Flash（账号额度由 Qwen Code 的计划决
 
 ## 特色行为
 
-- **插件内登录 `/qwen-login`**：复刻 Qwen Code 1.0 preview 的 Qoder 官方 OAuth（PKCE `verifier`/`challenge`/`nonce` + `/api/v1/deviceToken/poll` 轮询，404 表示等待授权）。浏览器授权成功后按 CLI 同一 schema 写入 `~/.qwen/qoder_oauth_creds.json` 并热加载；支持 `status` / `relogin` / `open` / `cancel` 子命令。桥接同时提供 `/login/start`、`/login/status`、`/login/cancel` 端点。
+- **插件内登录 `/qwen-login`**：复刻 Qwen Code 1.0 preview 的 Qoder 官方 OAuth（PKCE `verifier`/`challenge`/`nonce` + `/api/v1/deviceToken/poll` 轮询，404 表示等待授权）。浏览器授权成功后按 CLI 同一 schema 写入 `~/.qwen/qoder_oauth_creds.json` 并热加载；支持 `status` / `cn` / `global` / `use cn|global` / `relogin` / `open` / `cancel` 子命令，中国区与国际区账号分别保存在 `accounts.cn` / `accounts.global`，登录成功自动切换当前使用区域。桥接同时提供 `/login/start`、`/login/status`、`/login/cancel` 端点。
 - **实时模型目录**：启动时按 Qwen Code 的同一接口拉 `qcode` 目录，模型 id、显示名、上下文、视觉能力与 `thinking_config` 档位都以目录为准；目录失败时回退内置表，不阻塞启动。Qwen 上新模型不需要升级插件。
 - **token 自动刷新并写回**：access token 到期前 5 分钟自动用 refresh token 刷新；新 token 按原文件 schema（camelCase、`version`、`accounts.<region>`、`updatedAt`）原子写回，`qwen` CLI 下次运行可直接复用。上游 401 会触发一次强制刷新后重试。刷新响应只给 `expires_in` 时按相对秒数换算，不会写成 1970 年。
 - **与 qwen CLI 共存**：每次取 token 前按凭证文件 mtime/size 检测外部刷新；写回前核对 refresh_token，若已被 CLI 轮换则采用磁盘版本、不覆盖对方凭证。已实测：插件刷新写回后 `qwen -p` 仍正常；外部轮换后桥接自动采用新 token。
@@ -88,7 +88,7 @@ Qwen4-Max / Qwen3.8-Max / Qwen3.8-Flash（账号额度由 Qwen Code 的计划决
 
 ## 验证
 
-- 单元测试：`node --test "tests/*.test.mjs"`（不联网；46 项，覆盖请求清洗、目录映射、token 刷新、provider 配置与登录流程；PATH 里没有 node 时用 `& $env:DSH_NODE_EXECUTABLE --test "tests/*.test.mjs"`）。
+- 单元测试：`node --test "tests/*.test.mjs"`（不联网；48 项，覆盖请求清洗、目录映射、token 刷新、provider 配置与登录流程；PATH 里没有 node 时用 `& $env:DSH_NODE_EXECUTABLE --test "tests/*.test.mjs"`）。
 - 健康检查：`curl http://127.0.0.1:45917/healthz`（返回版本、模型表、凭证状态、请求计数、最近日志）。
 - 独立自测（不经过 DSH，直接验证桥接与真实上游）：`pwsh -File scripts\run-node.ps1 scripts\selftest.mjs`。
 - DSH 内验证：新建会话选择 **Qwen Code · 免费额度** 分组下的模型，让它执行一次文件读写或 bash 命令，确认工具调用与思考过程正常。
