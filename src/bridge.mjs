@@ -12,6 +12,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
 import { QoderAuth, QoderAuthError, normalizeRegion, regionEndpoints } from './qoder-auth.mjs'
+import { QoderLoginManager } from './qoder-login.mjs'
 import { VERSION } from './version.mjs'
 
 /** 与 Qwen Code 模型目录一致的默认模型清单（可在插件 config 中覆盖）。 */
@@ -79,6 +80,14 @@ export const DEFAULT_CONFIG = {
   missingReasoningMeansOff: false,
   /** /healthz 是否返回凭证路径、账号名等本机隐私字段（默认否）。 */
   healthzDetail: false,
+  /** Qoder OAuth client_id（与 qwen-code 一致）。 */
+  clientId: 'ecaf4a7a-5e5b-4659-9a95-7a1570012a41',
+  /** 登录会话最长等待时间（毫秒）。 */
+  loginTimeoutMs: 10 * 60 * 1000,
+  /** 登录轮询间隔（毫秒）。 */
+  loginPollIntervalMs: 2000,
+  /** 发起登录时是否自动打开系统浏览器。 */
+  openBrowserOnLogin: true,
   models: DEFAULT_MODELS,
 }
 
@@ -298,6 +307,17 @@ export function createBridge(userConfig = {}) {
     logger,
     fetchImpl: config.fetchImpl,
   })
+  const login = config.loginManager ?? new QoderLoginManager({
+    auth,
+    credentialPath: config.credentialPath,
+    region: config.region,
+    clientId: config.clientId,
+    fetchImpl: config.fetchImpl,
+    logger,
+    pollIntervalMs: config.loginPollIntervalMs,
+    timeoutMs: config.loginTimeoutMs,
+    openBrowser: config.openBrowserOnLogin,
+  })
 
   /** @type {import('node:http').Server | undefined} */
   let server
@@ -377,6 +397,17 @@ export function createBridge(userConfig = {}) {
     })
   }
 
+  /** 登录状态摘要：只暴露必要字段（不含 authUrl / verifier / 用户名等隐私值）。 */
+  function publicLoginStatus() {
+    const status = login.status()
+    return {
+      status: status.status,
+      region: status.region,
+      loggedIn: Boolean(status.loggedIn),
+      expiresAt: status.expiresAt ?? null,
+    }
+  }
+
   function handleHealth(res) {
     // 默认只暴露运行状态与去敏信息；凭证路径、账号名、userId 属于本机隐私，
     // 仅在显式开启 healthzDetail 时返回，避免同机其它进程读取。
@@ -402,13 +433,58 @@ export function createBridge(userConfig = {}) {
       modelCount: currentModels().length,
       models: currentModels().map((model) => model.id),
       auth: publicAuth,
+      login: publicLoginStatus(),
       stats: { ...stats, uptimeMs: startedAt ? Date.now() - startedAt : 0 },
       recentLog: recentLog.slice(-20).map(redactLogEntry),
     }
     if (config.healthzDetail === true) {
       payload.auth = authStatus
+      payload.login = login.status()
     }
     sendJson(res, 200, payload)
+  }
+
+  /** 读取可选 JSON 请求体（登录接口用，限制 64KB）。 */
+  async function readOptionalJson(req) {
+    const raw = await readRequestBody(req, 64 * 1024)
+    if (!raw.trim()) return {}
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('请求体必须是 JSON 对象')
+    }
+    return parsed
+  }
+
+  /** POST /login/start：发起 Qoder 设备登录，返回浏览器授权地址。 */
+  async function handleLoginStart(req, res) {
+    let body
+    try {
+      body = await readOptionalJson(req)
+    } catch (error) {
+      sendError(res, 400, `登录请求解析失败：${error?.message ?? error}`)
+      return
+    }
+    const session = login.start({ region: typeof body.region === 'string' ? body.region : undefined })
+    sendJson(res, 200, { ok: true, ...session })
+  }
+
+  /** GET /login/status[?id=...]：查询登录进度。 */
+  function handleLoginStatus(res, url) {
+    const session = login.status(url.searchParams.get('id') ?? undefined)
+    sendJson(res, 200, { ok: true, ...session })
+  }
+
+  /** POST /login/cancel：取消当前（或指定 id 的）登录会话。 */
+  async function handleLoginCancel(req, res) {
+    let body
+    try {
+      body = await readOptionalJson(req)
+    } catch (error) {
+      sendError(res, 400, `取消登录请求解析失败：${error?.message ?? error}`)
+      return
+    }
+    const cancelled = login.cancel(typeof body.id === 'string' ? body.id : undefined)
+    sendJson(res, 200, { ok: true, cancelled, status: login.status() })
   }
 
   /** 把上游 SSE 原样转发给 DSH 侧。 */
@@ -606,6 +682,9 @@ export function createBridge(userConfig = {}) {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`)
     const pathname = url.pathname.replace(/\/+$/, '') || '/'
     if (req.method === 'GET' && (pathname === '/healthz' || pathname === '/health')) return handleHealth(res)
+    if (req.method === 'POST' && (pathname === '/login/start' || pathname === '/v1/login/start')) return handleLoginStart(req, res)
+    if (req.method === 'GET' && (pathname === '/login' || pathname === '/login/status' || pathname === '/v1/login/status')) return handleLoginStatus(res, url)
+    if (req.method === 'POST' && (pathname === '/login/cancel' || pathname === '/v1/login/cancel')) return handleLoginCancel(req, res)
     if (req.method === 'GET' && (pathname === '/v1/models' || pathname === '/models')) return handleModels(res)
     if (req.method === 'POST' && (pathname === '/v1/responses' || pathname === '/responses')) return handleResponses(req, res)
     if (pathname === '/' || pathname === '/v1') {
@@ -617,6 +696,7 @@ export function createBridge(userConfig = {}) {
   return {
     config,
     auth,
+    login,
     stats,
     /** 当前模型表（目录拉取成功后由 setModels 替换）。 */
     get models() {
@@ -684,6 +764,7 @@ export function createBridge(userConfig = {}) {
       if (!server) return
       const current = server
       server = undefined
+      login.dispose()
       for (const socket of sockets) socket.destroy()
       sockets.clear()
       await new Promise((resolve) => current.close(() => resolve()))

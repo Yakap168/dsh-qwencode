@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Qwen Code 免费额度",
-    "description": "把本机 Qwen Code（Qoder 登录）的模型额度接入 DSH：本地桥接服务负责 Qoder OAuth 鉴权与 OpenAI Responses 协议适配，自动注册 provider，启动时同步 Qoder 实时模型目录，保留每个模型的思考强度档位，并支持 token 自动刷新。",
+    "description": "把本机 Qwen Code（Qoder 登录）的模型额度接入 DSH：支持 /qwen-login 插件内浏览器登录，本地桥接服务负责 Qoder OAuth 鉴权与 OpenAI Responses 协议适配，自动注册 provider，启动时同步 Qoder 实时模型目录，保留每个模型的思考强度档位，并支持 token 自动刷新。",
     "detail": "docs/DETAIL.md"
   }
 }

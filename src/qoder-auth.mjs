@@ -39,7 +39,7 @@ export const QODER_REGIONS = {
 }
 
 /** access token 默认有效期：30 天（与 qwen-code 内部常量一致）。 */
-const DEFAULT_ACCESS_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000
+export const DEFAULT_ACCESS_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000
 /** 提前刷新的余量：5 分钟。 */
 const DEFAULT_REFRESH_SKEW_MS = 5 * 60 * 1000
 /** 刷新请求超时：30 秒。 */

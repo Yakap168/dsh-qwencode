@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-qwencode",
-  "version": "1.0.0-rc.1",
+  "version": "1.0.1-rc.1",
   "private": true,
   "description": "把本机 Qwen Code（Qoder 登录）的免费额度接入 DeepSeek Harness：本地桥接 + 实时模型目录 + 自动注册 provider，保留每个模型的思考强度档位。",
   "type": "module",

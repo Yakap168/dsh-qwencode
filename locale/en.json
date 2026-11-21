@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Qwen Code quota",
-    "description": "Brings this machine's Qwen Code (Qoder sign-in) model quota into DSH through a local bridge that handles Qoder OAuth and the OpenAI Responses protocol, syncs Qoder's live model catalog at startup, auto-registers the provider, keeps each model's reasoning-effort levels, and refreshes tokens automatically.",
+    "description": "Brings this machine's Qwen Code (Qoder sign-in) model quota into DSH: sign in from the DSH composer with /qwen-login, while a local bridge handles Qoder OAuth and the OpenAI Responses protocol, syncs Qoder's live model catalog at startup, auto-registers the provider, keeps each model's reasoning-effort levels, and refreshes tokens automatically.",
     "detail": "docs/DETAIL.md"
   }
 }

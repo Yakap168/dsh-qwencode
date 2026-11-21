@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.1-rc.1 — 2026-11-21
+
+- 新增 **`/qwen-login` 插件内登录**：在 DSH 输入框直接发起 Qoder OAuth 登录，浏览器授权后自动写回凭证，不用离开 DSH，也不用在终端里运行 Qwen Code。
+- 登录流程复刻 qwen-code 1.0.0-preview.2 的官方 OAuth：PKCE（`verifier`/`challenge`/`nonce`）+ `GET /api/v1/deviceToken/poll` 轮询（404 = 等待授权），成功后写 `~/.qwen/qoder_oauth_creds.json`（与 CLI 同一 schema），并调用 `QoderAuth.reload()` 热加载。
+- 桥接服务新增 `/login/start`、`/login/status`、`/login/cancel` 三个本地端点，供命令、脚本和自动化使用。
+- 登录子命令：`/qwen-login`、`/qwen-login status`、`/qwen-login relogin`、`/qwen-login open`、`/qwen-login cancel`。
+- 新增配置项 `clientId`、`loginTimeoutMs`、`loginPollIntervalMs`、`openBrowserOnLogin`。
+- 新增 19 项登录流程单元测试（PKCE、轮询、凭证写回、管理器、浏览器打开、命令 handler、桥接端点与完整成功流程、错误与超时路径）；全套 46 项测试通过。
+- README 新增「🔑 插件内登录：/qwen-login」章节与排障说明。
+
 ## 1.0.0-rc.1 — 2026-11-17
 
 首个公开发布候选（release candidate）。

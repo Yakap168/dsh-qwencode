@@ -1,6 +1,8 @@
 # dsh-qwencode
 
-把本机 **Qwen Code**（`qwen` CLI 1.0 preview，Qoder 账号登录）的免费额度作为 DeepSeek Harness 的模型 provider（路由键 `qwencode`）接入。当前版本 **1.0.0-rc.1**（release candidate），变更见 [CHANGELOG.md](./CHANGELOG.md)。
+把本机 **Qwen Code**（`qwen` CLI 1.0 preview，Qoder 账号登录）的免费额度作为 DeepSeek Harness 的模型 provider（路由键 `qwencode`）接入。当前版本 **1.0.1-rc.1**（release candidate），变更见 [CHANGELOG.md](./CHANGELOG.md)。
+
+> 1.0.1-rc.1 新增 **`/qwen-login` 插件内登录**：不用离开 DSH、不用在终端里运行 Qwen Code，浏览器授权一次即可拿到免费额度（见「🔑 插件内登录」）。
 
 插件附赠一个只监听 `127.0.0.1` 的桥接服务：
 
@@ -18,6 +20,8 @@ DSH 会话 ──(OpenAI Responses / pi-ai)──► http://127.0.0.1:45917/v1 �
 
 下面按 "我什么都还没装" 的视角走一遍。全程大概 10 分钟，卡住的地方看每一步最后的 🧯。
 
+> ⚡ **只想在 DSH 里用、不想碰终端？** 可以跳过第 1、2 步：直接看 **第 3 步装插件**，装好后在 DSH 输入 `/qwen-login`，插件会自己完成 Qoder 登录（详见「🔑 插件内登录」）。
+
 ### 第 0 步：先理清三样东西
 
 想象你要开车去一个"免费的加油站"：
@@ -25,14 +29,14 @@ DSH 会话 ──(OpenAI Responses / pi-ai)──► http://127.0.0.1:45917/v1 �
 | 角色 | 在本项目里是什么 | 你需要做什么 |
 |---|---|---|
 | 🚗 车 | **DeepSeek Harness（DSH）** | 已装好（你能看到这个插件市场就说明有了） |
-| ⛽ 免费的油站 | 你 Qoder 账号的模型额度 | 用 **Qwen Code** 登录一次，拿到"油卡" |
+| ⛽ 免费的油站 | 你 Qoder 账号的模型额度 | 登录一次 Qoder（Qwen Code CLI 或插件 `/qwen-login` 都行） |
 | 🔌 转接头 | 本插件 `dsh-qwencode` | 装它，把"油站"接到"车"上 |
 
 **Qwen Code** 是阿里 Qwen 官方的终端编程工具，用 **Qoder 账号** 登录后，自带一份模型额度（含免费模型 `Qwen3.8-Flash`）。本插件就是把这份额度"转接"进 DSH，让你在 DSH 里像用普通模型一样用它——而且**工具调用、读文件、写代码、加载 skill 全都照常工作**。
 
 > 一句话：**Qwen Code 负责发"油卡"，插件负责把油加进 DSH 这台车。**
 
-### 第 1 步：安装 Qwen Code（拿"油卡"的前提）
+### 第 1 步（可选）：安装 Qwen Code（拿"油卡"的前提）
 
 > 官方文档：[Qwen Code 概览](https://qwenlm.github.io/qwen-code-docs/en/users/overview/) · [快速开始](https://qwenlm.github.io/qwen-code-docs/en/users/quickstart/)
 
@@ -60,7 +64,9 @@ qwen --version      # 能打印版本号就成功，例如 1.0.0-preview.2
 - `qwen` 不是命令 → 重开终端；还不行就用 `where qwen`（Windows）/ `which qwen`（mac/Linux）找它装到哪了，手动把目录加进 PATH。
 - 公司网络装不动 → 换手机热点再试，或改用上面注释里的 npm 方式。
 
-### 第 2 步：用 Qoder 账号登录（真正领到"油卡"）
+### 第 2 步（可选）：用 Qoder 账号登录（真正领到"油卡"）
+
+> 💡 **已经装好本插件了？** 可以跳过这一步：直接在 DSH 输入框输入 `/qwen-login`，浏览器授权后自动完成登录（详见下面的「🔑 插件内登录」）。两种方式写的是同一份凭证，随时可以混用。
 
 在终端直接输入 `qwen` 进入交互界面，然后：
 
@@ -103,11 +109,12 @@ qwen --version      # 能打印版本号就成功，例如 1.0.0-preview.2
 
 （对应工具调用是 `plugin_manager(action: "install_bundle", target: "<本仓库绝对路径>")`。）
 
-装好之后，插件会自动做三件事，你**什么都不用配**：
+装好之后，插件会自动做四件事，你**什么都不用配**：
 
 - 在本机 `127.0.0.1:45917` 起一个"转接服务"；
 - 把 `qwencode` 这个模型来源注册进 DSH；
-- 在**模型选择器**里多出一个分组：**Qwen Code · 免费额度**。
+- 在**模型选择器**里多出一个分组：**Qwen Code · 免费额度**；
+- 在输入框注册 **`/qwen-login`** 登录命令（如果输入后没有提示，重启一次 DSH 让新模块生效）。
 
 > 插件每次启动都会核对这份配置是否最新（端口/模型目录/默认档位），不一致会自动更新；等价于你在 Models 设置页手动保存一次。不想让它自动改，把插件配置 `manageProviderConfig` 设为 `false`，日志会打印可手动粘贴的 YAML。
 
@@ -132,15 +139,76 @@ qwen --version      # 能打印版本号就成功，例如 1.0.0-preview.2
 curl http://127.0.0.1:45917/healthz
 ```
 
-返回里 `ok: true`、`models` 有 4 个、`auth.hasAccount: true`，就说明全链路通了。
+返回里 `ok: true`、`models` 有 4 个、`auth.hasAccount: true`、`login.status` 为 `idle`/`success`，就说明全链路通了。
+
+---
+
+## 🔑 插件内登录：`/qwen-login`
+
+**这是 1.0.1-rc.1 新增的登录入口。** 不需要终端、不需要在终端里运行 Qwen Code，在 DSH 里一条命令就能完成 Qoder OAuth 登录。
+
+### 第一次登录（3 步）
+
+1. 在 DSH 的输入框直接输入并发送：
+
+   ```text
+   /qwen-login
+   ```
+
+2. 插件会自动打开系统默认浏览器，进入 Qoder 授权页（`qoder.cn`）。没有自动打开？把命令返回结果里的**授权链接**复制到浏览器打开即可。
+3. 在页面里登录 Qoder 账号并确认授权。回到 DSH，命令会自动返回：
+
+   ```text
+   ✅ 登录成功：<你的账号>
+   凭证已写入 ...\.qwen\qoder_oauth_creds.json
+   ```
+
+   > 命令最多等 2 分钟；如果你在浏览器里操作得慢，超过 2 分钟后再运行 `/qwen-login status` 查看结果，成功后同样会写入凭证。
+
+### 常用子命令
+
+| 命令 | 作用 |
+|---|---|
+| `/qwen-login` | 未登录时发起登录；已登录时显示当前账号状态 |
+| `/qwen-login status` | 查看登录状态、账号、Access Token 到期时间 |
+| `/qwen-login relogin` | 强制重新登录（切换 Qoder 账号时用） |
+| `/qwen-login open` | 重新打开当前授权页 |
+| `/qwen-login cancel` | 取消进行中的登录 |
+
+### 给脚本 / 自动化用：HTTP 端点
+
+桥接服务同时暴露三个本地端点（仅 `127.0.0.1`）：
+
+```powershell
+# 发起登录，返回 authUrl / id / expiresAt
+curl -X POST http://127.0.0.1:45917/login/start
+
+# 查询进度（不传 id 查最近一次）：pending / success / error / expired / cancelled
+curl "http://127.0.0.1:45917/login/status?id=<id>"
+
+# 取消
+curl -X POST http://127.0.0.1:45917/login/cancel -H "Content-Type: application/json" -d "{\"id\":\"<id>\"}"
+```
+
+### 它到底做了什么（安心版）
+
+1. 插件在本地生成 PKCE 校验串（`verifier` / `challenge` / `nonce`），拼出 Qoder 官方授权页；
+2. 你在浏览器里登录、授权，Qoder 把授权结果绑定到这次 `nonce`；
+3. 插件每 2 秒向 Qoder 官方轮询一次（404 = 你还没点完，不是报错），拿到 `accessToken` / `refreshToken`；
+4. 按 Qwen Code CLI **完全相同的 schema** 写入 `~/.qwen/qoder_oauth_creds.json`，并立即热加载给桥接服务使用。
+
+整个流程与 Qwen Code CLI 的 `/auth` 是同一套官方 OAuth 协议，只是把"终端里操作"换成了"DSH 里一条命令"。插件不会接触你的 Qoder 密码，也不会把 token 发到任何第三方。
 
 ---
 
 ## 前置条件（速查）
 
-1. 本机安装并登录 Qwen Code：`qwen` 命令可运行，且已通过 `/auth` 用 Qoder 账号登录。
-2. 凭证文件存在：`%USERPROFILE%\.qwen\qoder_oauth_creds.json`（`accounts.cn` 或 `accounts.global` 下有 `accessToken`/`refreshToken`）。
-3. DSH 0.2.x（本项目针对 0.2.2-rc.3 开发验证）。
+1. 有一个可用的 **Qoder 账号**（免费额度与模型权限由账号计划决定）。
+2. 登录方式任选其一：
+   - **在 DSH 里运行 `/qwen-login`**（推荐；插件装好后可用，不需要终端、不需要在终端里运行 Qwen Code）；
+   - 或者安装并登录 Qwen Code CLI：`qwen` 命令可运行，且已通过 `/auth` 用 Qoder 账号登录。
+3. 凭证文件存在：`%USERPROFILE%\.qwen\qoder_oauth_creds.json`（`accounts.cn` 或 `accounts.global` 下有 `accessToken`/`refreshToken`）。
+4. DSH 0.2.x（本项目针对 0.2.2-rc.3 开发验证）。
 
 ## 安装（技术版速查）
 
@@ -186,6 +254,10 @@ plugin_manager(action: "install_bundle", target: "D:\\ds.harness\\dsh-qwencode")
 | `autoConfirmPaid` | `false` | 付费确认模型是否自动确认（会扣付费额度）。 |
 | `manageProviderConfig` | `true` | 是否自动写 provider 配置。 |
 | `credentialPath` | 默认凭证路径 | 自定义凭证文件路径。 |
+| `clientId` | `ecaf4a7a-…-7a1570012a41` | Qoder OAuth 的 `client_id`（qwen-code 内置 UUID，一般不用改）。 |
+| `loginTimeoutMs` | `600000` | 登录会话最长等待时间（毫秒）；超时后需重新发起。 |
+| `loginPollIntervalMs` | `2000` | 登录轮询间隔（毫秒）。 |
+| `openBrowserOnLogin` | `true` | 发起登录时是否自动打开系统默认浏览器。 |
 | `useLiveCatalog` | `true` | 启动时从 Qoder 拉实时模型目录；关闭后只用内置表。 |
 | `catalogTimeoutMs` | `3000` | 模型目录请求超时；失败不阻塞启动，回退内置表。 |
 | `defaultReasoningEffort` | `low` | 全局默认档位；`low` 四个模型都支持。设为空可回到 Qwen 各模型默认，但 DSH 的 `off` 将无法关闭思考。 |
@@ -204,13 +276,17 @@ node --test "tests/*.test.mjs"
 # 3) 不经过 DSH 的独立自测（真实打上游，消耗少量额度）
 pwsh -File scripts\run-node.ps1 scripts\selftest.mjs --model qfmodel
 
-# 4) DSH 内：新建会话选择「Qwen Code · 免费额度」下的模型，
+# 4) DSH 内登录：在输入框运行 /qwen-login，浏览器授权后应返回"登录成功"
+#    （首次使用、换账号或凭证过期时）
+
+# 5) DSH 内：新建会话选择「Qwen Code · 免费额度」下的模型，
 #    让它读写文件 / 执行一条命令，确认工具调用与思考过程正常。
 ```
 
-`selftest.mjs` 覆盖：healthz、实时模型目录、模型列表、纯文本+思考流、工具调用、工具结果回传、错误映射。单元测试覆盖请求清洗、Qoder 目录映射、token 刷新（含 `expires_in` 与并发轮换）、provider 配置生成。
+`selftest.mjs` 覆盖：healthz、实时模型目录、模型列表、纯文本+思考流、工具调用、工具结果回传、错误映射。单元测试覆盖请求清洗、Qoder 目录映射、token 刷新（含 `expires_in` 与并发轮换）、provider 配置生成，以及 `/qwen-login` 的 PKCE、轮询、凭证写回与桥接登录端点。
 
 已在 DSH 0.2.2-rc.3 的桌面 profile 实测：
+- **1.0.1-rc.1**：单元测试 46 项全 PASS（新增 19 项登录流程测试：PKCE 生成、轮询 404 等待/成功映射、缺 refresh_token、非 404/非法 JSON 错误、凭证写回与多地域合并、版本校验与写失败、登录管理器成功/取消/超时、浏览器打开、命令 handler 分支与卸载、桥接 `/login/*` 端点及完整成功流程）；真实网络验证 `/login/start` 返回合法 `authUrl`（`qoder.cn/device/selectAccounts?sourceType=QwenCode...`），`/login/status` 在未完成浏览器授权时保持 `pending`（官方轮询返回 404），`/login/cancel` 正常。
 - **1.0.0-rc.1**：单元测试 20 项全 PASS；独立 `selftest.mjs` 8 项全 PASS，其中 `live_catalog` 从 Qoder 拉到 4 个模型（`qmodel_38max@180000`、`qfmodel@180000`），文本+思考流、工具调用、工具结果回传与错误映射均通过。另实测：不带 `reasoning` 字段请求 `qfmodel` 时上游返回 18 个思考增量（Qwen 默认开启）；带 `reasoning.effort="none"` 时返回 0 个思考增量，证明 `off` 映射有效。
 - 0.1.0 安装即生效：`dsh-plugin` 行状态 active，`/healthz` 正常，provider 配置自动写入 profile patch；2026-11-17 17:08 桥接随本次 DSH 启动重新拉起并正常服务，说明已安装 bundle 的持久化生效。
 - 用 `provider=qwencode, model=qmodel_latest` 的真实子代理会话完成：`pwsh` 写文件 → `read` 读回 → `skill` 加载 `dsh-doc` → 目录列举，全部真实工具调用成功；
@@ -228,6 +304,7 @@ dsh-qwencode/
 │   ├── bridge.mjs        # 本地 HTTP 桥接（Responses 透传、请求清洗、错误映射）
 │   ├── catalog.mjs       # Qoder 实时模型目录（qcode）解析与拉取
 │   ├── qoder-auth.mjs    # Qoder OAuth 凭证读取/刷新/原子写回
+│   ├── qoder-login.mjs   # Qoder OAuth 设备登录（PKCE + 轮询 + 凭证写回）
 │   ├── diagnostics.mjs   # provider 自动注册诊断
 │   └── version.mjs       # 版本号（读 package.json）
 ├── tests/                # node:test 单元测试（不联网）
@@ -249,12 +326,16 @@ dsh-qwencode/
 - 与 Qwen Code CLI 共用同一份凭证：桥接按文件 mtime/size 感知 CLI 的并发刷新；写回前再次核对 refresh_token，发现已被 CLI 轮换则放弃本次写回、采用磁盘版本，避免互相覆盖。
 - 桥接只绑定 `127.0.0.1`；access token 只存在于本机进程与既有凭证文件，刷新后按原 schema 原子写回，不向第三方泄露。
 - 凭证失效（refresh_token 过期/被撤销）时插件报错并提示重新运行 `qwen` 登录，不会删除凭证文件。
+- `/qwen-login` 复刻的是 Qwen Code 1.0 preview 的 Qoder 官方 OAuth 流程（PKCE + 轮询，按 qwen-code 1.0.0-preview.2 的二进制实现；该版本不发送 `machine_id`）。如果 Qoder 后续调整授权页或端点，需要按新版 qwen-code 同步更新；届时仍可回退到 `qwen` CLI 的 `/auth` 登录。
 
 ## 排障
 
 - **端口被占用**：插件行状态会失败并在日志里提示；把插件配置的 `port` 改成其它值（provider 的 baseURL 会自动同步），重载插件/重启 DSH。
 - **provider 没出现在模型选择器**：查看 `%TEMP%\dsh-qwencode\provider-sync.json` 里的自动注册诊断（最近的尝试、失败原因）；把插件配置 `manageProviderConfig` 设为 `false` 后按日志打印的 YAML 手动添加。
-- **凭证缺失/过期**：`curl http://127.0.0.1:45917/healthz` 的 `auth` 字段会给出状态与错误；运行 `qwen` 后执行 `/auth` 重新登录即可。
+- **凭证缺失/过期**：在 DSH 里运行 `/qwen-login`（或 `/qwen-login relogin`）重新登录；也可以继续用 `qwen` 后执行 `/auth`。`curl http://127.0.0.1:45917/healthz` 的 `auth` 字段会给出状态与错误。
+- **`/qwen-login` 找不到命令或没反应**：新模块需要重装插件或重启 DSH 才会加载（见「开发」）；确认当前是桌面/Web profile（headless 没有 commands 服务，可改用 `/login/*` HTTP 端点）。
+- **登录时浏览器没自动打开**：把命令返回的 `authUrl` 复制到浏览器；或先 `/qwen-login open` 再试。仍不行就检查系统默认浏览器是否可用。
+- **`/qwen-login status` 一直 pending**：确认浏览器里已经点了"授权/允许"且没有关闭页面；授权页会话默认 10 分钟过期，过期后重新 `/qwen-login`。网络抖动时插件会自动重试，不需要手动刷新。
 - **额度/付费确认**：上游返回 `MODEL_PAID_CONFIRM_REQUIRED` 时桥接返回 402 并说明；需要自动确认时把 `autoConfirmPaid` 设为 `true`（会消耗付费额度）。
 - **模型回话但不动手（不调工具）**：确认选中的是 `Qwen Code · 免费额度` 分组里的模型，而不是别的 provider；再确认会话权限允许执行工具（不是纯聊天模式）。
 - **改了 `src/*.mjs` 不生效**：插件模块需要重装/重启才加载新代码（见「开发」）。
@@ -264,6 +345,8 @@ dsh-qwencode/
 - 桥接只绑定 `127.0.0.1`，并会把非 loopback 的 `host` 配置视为错误拒绝启动；不向局域网暴露。
 - `/healthz` 默认只返回版本、模型 id 列表、凭证状态（可用/到期时间/region）与去敏后的请求计数；`credentialPath`、用户名、userId 仅在显式 `healthzDetail: true` 时返回。
 - 凭证文件按原 schema 原子写回（临时文件 + rename）；POSIX 上设为 0o600，Windows 上依赖用户 profile 目录的默认 ACL（Windows 无法用 chmod 收紧，见「限制」）。
+- 登录接口（`/login/start`、`/login/status`、`/login/cancel`）与桥接服务一样只监听 `127.0.0.1`；授权链接里的 `nonce`/`challenge` 是一次性随机值，不包含账号密码。插件全程不接触、不保存你的 Qoder 密码。
+- 登录会话只保存在内存中（默认 10 分钟过期），插件重启即失效；已经写入磁盘的凭证不受影响。
 - 刷新与错误信息不含 access/refresh token；上游错误详情只保留脱敏后的短摘要，不落盘。
 
 ## 开发

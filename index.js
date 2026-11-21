@@ -15,6 +15,8 @@ import { fetchModelCatalog } from './src/catalog.mjs'
 import { recordDiagnostic } from './src/diagnostics.mjs'
 
 export const name = 'dsh-qwencode'
+/** 依赖 DSH 的命令注册表；桌面/Web/headless 都由 dsh-base 提供 commands。 */
+export const inject = ['commands']
 
 /** provider 路由键，模型选择器里的分组名由 provider 配置的 displayName 决定。 */
 const PROVIDER_ROUTE = 'qwencode'
@@ -41,6 +43,14 @@ export const DEFAULT_OPTIONS = {
   manageProviderConfig: true,
   /** 自定义凭证路径（默认 ~/.qwen/qoder_oauth_creds.json）。 */
   credentialPath: undefined,
+  /** Qoder OAuth client_id（与 qwen-code 一致，一般不需要改）。 */
+  clientId: 'ecaf4a7a-5e5b-4659-9a95-7a1570012a41',
+  /** 登录会话最长等待时间（毫秒）。 */
+  loginTimeoutMs: 10 * 60 * 1000,
+  /** 登录轮询间隔（毫秒）。 */
+  loginPollIntervalMs: 2000,
+  /** 发起登录时是否自动打开系统浏览器。 */
+  openBrowserOnLogin: true,
   /** 自定义模型表（数组）；缺省时用 Qoder 目录，失败回退内置表。 */
   models: undefined,
   /** 启动时是否从 Qoder 拉取实时模型目录（默认开启）。 */
@@ -262,6 +272,130 @@ function scheduleProviderRoute(ctx, options, getModels = () => DEFAULT_MODELS) {
 }
 
 /**
+ * 注册 `/qwen-login` 斜杠命令。
+ *
+ * DSH 的 commands 服务由 dsh-base 提供，模块级 inject 保证 apply 前已就绪；
+ * 这里仍做防御性检查，服务缺失时只跳过命令注册，桥接服务不受影响。
+ *
+ * @param {import('@deepseek-ai/cordis').Context} ctx
+ * @param {ReturnType<typeof createBridge>} bridge
+ * @param {{warn?: Function}} logger
+ * @returns {() => void} 注销函数
+ */
+export function registerQwenLoginCommand(ctx, bridge, logger) {
+  // 优先走注入后的 ctx.commands 属性（与官方 dsh-command-* 一致）；
+  // 测试/旧 Cordis 环境退回 ctx.get。
+  const commands = ctx.commands ?? ctx.get('commands')
+  if (!commands || typeof commands.register !== 'function') {
+    logger.warn?.('[dsh-qwencode] commands 服务不可用，/qwen-login 命令未注册；仍可通过 /login/* HTTP 端点登录')
+    return () => {}
+  }
+  // 插件卸载/HMR 重载时置位，让仍在等待的 handler 尽快退出。
+  let disposed = false
+  const formatTime = (value) => {
+    if (!Number.isFinite(value)) return '未知'
+    try {
+      return new Date(value).toLocaleString('zh-CN', { hour12: false })
+    } catch {
+      return new Date(value).toISOString()
+    }
+  }
+  const statusText = () => {
+    const auth = bridge.auth.status()
+    if (!auth.hasAccount) {
+      return '❌ 还没有 Qwen Code 登录凭证。\n运行 /qwen-login 打开浏览器完成登录（免费额度需要 Qoder 账号）。'
+    }
+    return [
+      '✅ 已登录 Qwen Code',
+      `账号：${auth.userName || '未知'}`,
+      `Region：${auth.region}`,
+      `Access Token 到期：${formatTime(auth.accessTokenExpiresAt)}`,
+      '',
+      '要切换账号或重新登录，运行 /qwen-login relogin。',
+    ].join('\n')
+  }
+  const waitForLogin = async (session, signal) => {
+    const deadline = Date.now() + 120_000
+    while (!disposed && Date.now() < deadline) {
+      if (signal?.aborted) {
+        bridge.login.cancel(session.id)
+        return { kind: 'error', text: '登录等待已取消。' }
+      }
+      const status = bridge.login.status(session.id)
+      if (status.status === 'success') {
+        return {
+          kind: 'success',
+          text: [
+            `✅ 登录成功：${status.userName || 'Qwen 用户'}`,
+            `凭证已写入 ${bridge.login.credentialPath}`,
+            '现在可以在模型选择器里使用「Qwen Code · 免费额度」了。',
+          ].join('\n'),
+        }
+      }
+      if (status.status === 'error') return { kind: 'error', text: `❌ 登录失败：${status.error ?? '未知错误'}` }
+      if (status.status === 'expired') return { kind: 'error', text: '⌛ 登录等待超时，请重新运行 /qwen-login。' }
+      if (status.status === 'cancelled') return { kind: 'error', text: '登录已取消。' }
+      await new Promise((resolve) => setTimeout(resolve, 1000))
+    }
+    if (disposed) return { kind: 'error', text: '插件已卸载，登录等待已停止（后台登录会话已取消）。' }
+    return {
+      kind: 'error',
+      text: [
+        '⌛ 还没有检测到授权完成（浏览器页面可能还开着）。',
+        `授权链接：${session.authUrl}`,
+        '完成登录后运行 /qwen-login status 查看结果；需要重新打开授权页可运行 /qwen-login open。',
+      ].join('\n'),
+    }
+  }
+  const disposeCommand = commands.register({
+    name: 'qwen-login',
+    description: '登录 Qwen Code（Qoder 免费额度），或查看登录状态',
+    input: { hint: '[status|relogin|open|cancel]' },
+    handler: async ({ rawInput, signal }) => {
+      if (disposed) return { kind: 'error', text: '插件已卸载，/qwen-login 暂不可用。' }
+      const input = String(rawInput ?? '').trim().toLowerCase()
+      if (input === 'status') {
+        return bridge.auth.status().hasAccount
+          ? { kind: 'success', text: statusText() }
+          : { kind: 'error', text: statusText() }
+      }
+      if (input === 'cancel') {
+        const cancelled = bridge.login.cancel()
+        return cancelled
+          ? { kind: 'success', text: '已取消进行中的 Qwen Code 登录。' }
+          : { kind: 'error', text: '当前没有进行中的登录。' }
+      }
+      if (input === 'open') {
+        const opened = bridge.login.open()
+        return opened
+          ? { kind: 'success', text: '已重新打开 Qwen Code 授权页。' }
+          : { kind: 'error', text: '当前没有进行中的登录，请先运行 /qwen-login。' }
+      }
+      const force = input === 'relogin' || input === 'force'
+      if (!force && bridge.auth.status().hasAccount) {
+        return { kind: 'success', text: statusText() }
+      }
+      const session = bridge.login.start()
+      const intro = [
+        '🔐 已打开浏览器，请在页面中完成 Qwen Code / Qoder 登录。',
+        `授权链接：${session.authUrl}`,
+        '浏览器没有自动打开时，把上面的链接复制到浏览器即可。',
+        '',
+        '登录完成后本命令会自动返回结果（最多等待 2 分钟）…',
+      ].join('\n')
+      const result = await waitForLogin(session, signal)
+      return result.kind === 'success' ? result : { kind: 'error', text: `${intro}\n\n${result.text}` }
+    },
+  })
+  return () => {
+    disposed = true
+    // 插件卸载时中断仍在等待的 handler，并取消后台登录会话。
+    bridge.login.cancel()
+    disposeCommand()
+  }
+}
+
+/**
  * Cordis 插件入口。
  * @param {import('@deepseek-ai/cordis').Context} ctx
  * @param {Partial<typeof DEFAULT_OPTIONS>} [config]
@@ -282,6 +416,10 @@ export async function apply(ctx, config) {
     clientVersion: options.clientVersion,
     autoConfirmPaid: options.autoConfirmPaid,
     credentialPath: options.credentialPath,
+    clientId: options.clientId,
+    loginTimeoutMs: options.loginTimeoutMs,
+    loginPollIntervalMs: options.loginPollIntervalMs,
+    openBrowserOnLogin: options.openBrowserOnLogin,
     models: options.models,
     // 配置了默认档位时，DSH 省略 reasoning 就代表用户选了 off；桥接补 none。
     missingReasoningMeansOff: Boolean(options.defaultReasoningEffort),
@@ -291,6 +429,10 @@ export async function apply(ctx, config) {
   ctx.effect(() => () => {
     void bridge.stop()
   })
+
+  // commands 服务由模块级 inject 保证就绪后再 apply。
+  const disposeLoginCommand = registerQwenLoginCommand(ctx, bridge, logger)
+  ctx.effect(() => () => disposeLoginCommand())
 
   // 先起服务，再拉目录：目录超时/失败不阻塞插件启动，模型选择器仍可用内置表。
   // 用户显式给了 models 时以自定义表为准，不再让实时目录覆盖。
@@ -319,6 +461,6 @@ export async function apply(ctx, config) {
   const cancelProviderSync = scheduleProviderRoute(ctx, options, () => bridge.models)
   ctx.effect(() => () => cancelProviderSync())
   ctx.logger?.info?.(
-    `[dsh-qwencode] 桥接服务就绪：${bridge.url}；${bridge.models.length} 个模型；Qoder 凭证 ${bridge.auth.status().hasAccount ? `已就绪（${bridge.auth.status().userName}）` : '缺失，请运行 qwen 登录'}`,
+    `[dsh-qwencode] 桥接服务就绪：${bridge.url}；${bridge.models.length} 个模型；Qoder 凭证 ${bridge.auth.status().hasAccount ? `已就绪（${bridge.auth.status().userName}）` : '缺失，运行 /qwen-login 登录'}`,
   )
 }
